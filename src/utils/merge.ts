@@ -1,4 +1,4 @@
-import type { PromptItem } from '@/core/types/sync';
+import type { PromptItem, PromptTag } from '@/core/types/sync';
 import type { ForkNode, ForkNodesData } from '@/pages/content/fork/forkTypes';
 import type {
   TimelineHierarchyConversationData,
@@ -266,6 +266,13 @@ function resolveFolderPath<TFolder extends MergeableFolder>(
  * Merges local and cloud prompts.
  */
 export function mergePrompts(local: PromptItem[], cloud: PromptItem[]): PromptItem[] {
+  return mergeItems(local, cloud);
+}
+
+/**
+ * Merges local and cloud prompt tag registries by id; newer updatedAt wins.
+ */
+export function mergePromptTags(local: PromptTag[], cloud: PromptTag[]): PromptTag[] {
   return mergeItems(local, cloud);
 }
 

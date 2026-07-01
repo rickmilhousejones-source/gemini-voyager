@@ -11,6 +11,7 @@ import { StorageKeys } from '@/core/types/common';
 import type { FolderData } from '@/core/types/folder';
 import type {
   PromptItem,
+  PromptTag,
   SettingsExportPayload,
   SyncAccountScope,
   SyncMode,
@@ -34,6 +35,7 @@ import { useLanguage } from '../../../contexts/LanguageContext';
 import {
   mergeFolderData,
   mergePrompts,
+  mergePromptTags,
   mergeStarredMessages,
   mergeTimelineHierarchy,
 } from '../../../utils/merge';
@@ -473,7 +475,7 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
               state?: SyncState;
               data?: {
                 folders?: { data?: FolderData };
-                prompts?: { items?: PromptItem[] };
+                prompts?: Pick<import('@/core/types/sync').PromptExportPayload, 'items' | 'tagRegistry'>;
                 settings?: SettingsExportPayload;
                 starred?: { data?: StarredMessagesData };
                 timelineHierarchy?: { data?: TimelineHierarchyData };
@@ -498,6 +500,7 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
         // Get current local data for merging - prioritize Content Script
         let localFolders: FolderData = { folders: [], folderContents: {} };
         let localPrompts: PromptItem[] = [];
+        let localPromptTags: PromptTag[] = [];
         let localTimelineHierarchy: TimelineHierarchyData = { conversations: {} };
 
         // 1. Try to get fresh folder data from active tab
@@ -538,6 +541,7 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
           const storageResult = await chrome.storage.local.get([
             folderStorageKey,
             StorageKeys.PROMPT_ITEMS,
+            StorageKeys.PROMPT_TAGS,
             ...getTimelineHierarchyStorageKeysToRead(timelineHierarchyAccountScope?.accountKey),
           ]);
           const storedFoldersValue = storageResult[folderStorageKey];
@@ -555,6 +559,13 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
           // Prompts only for Gemini platform
           if (platform === 'gemini' && isPromptItemArray(storedPromptsValue)) {
             localPrompts = storedPromptsValue;
+          }
+
+          if (platform === 'gemini') {
+            const storedTags = storageResult[StorageKeys.PROMPT_TAGS];
+            if (Array.isArray(storedTags)) {
+              localPromptTags = storedTags as PromptTag[];
+            }
           }
 
           if (platform === 'gemini') {
@@ -585,6 +596,7 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
           ? cloudFolderDataRaw
           : { folders: [], folderContents: {} };
         const cloudPromptItems = cloudPromptsPayload?.items || [];
+        const cloudPromptTags = cloudPromptsPayload?.tagRegistry || [];
         const cloudStarredData: StarredMessagesData = cloudStarredPayload?.data || { messages: {} };
         const cloudTimelineHierarchyData: TimelineHierarchyData =
           cloudTimelineHierarchyPayload?.data || { conversations: {} };
@@ -636,6 +648,9 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
         const nextPrompts = shouldOverwrite
           ? cloudPromptItems
           : mergePrompts(localPrompts, cloudPromptItems);
+        const nextPromptTags = shouldOverwrite
+          ? cloudPromptTags
+          : mergePromptTags(localPromptTags, cloudPromptTags);
         const nextStarred = shouldOverwrite
           ? cloudStarredData
           : mergeStarredMessages(localStarred, cloudStarredData);
@@ -670,6 +685,7 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
         // Only save prompts and starred for Gemini platform
         if (platform === 'gemini') {
           storageUpdate[StorageKeys.PROMPT_ITEMS] = nextPrompts;
+          storageUpdate[StorageKeys.PROMPT_TAGS] = nextPromptTags;
           storageUpdate.geminiTimelineStarredMessages = nextStarred;
           storageUpdate[timelineHierarchyStorageKey] = nextTimelineHierarchy;
         }

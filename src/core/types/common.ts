@@ -92,6 +92,8 @@ export const StorageKeys = {
   // set, not a synced preference; syncing them could restore tags a device
   // hasn't received yet. Shape: string[] of lowercased tag names.
   PROMPT_SELECTED_TAGS: 'gvPromptSelectedTags',
+  /** Tag registry with icon/color metadata. chrome.storage.local */
+  PROMPT_TAGS: 'gvPromptTags',
 
   // Global settings
   LANGUAGE: 'language',

@@ -33,7 +33,6 @@ import { expandInputCollapseIfNeeded } from '../inputCollapse/index';
 import { StarredMessagesService } from '../timeline/StarredMessagesService';
 import type { StarredMessage } from '../timeline/starredTypes';
 import { extractPlainTitle } from './compactTitle';
-import { activatePromptText } from './promptClickAction';
 import { getScrollHintState } from './scrollHint';
 import {
   buildStarredMessageUrl,
@@ -41,6 +40,20 @@ import {
   formatStarredMessageTime,
 } from './starredLibrary';
 import { sanitizeSelectedTags } from './tagFilterState';
+import { mountPromptTriggerIcon } from './promptTriggerIcon';
+import { resolveAndActivatePrompt } from './promptActivation';
+import {
+  ensureTagsForNewNames,
+  migratePromptTags,
+  removeTagFromPrompts,
+  syncTagNamesOnPrompts,
+  findTagByNormalized,
+} from './tagMigration';
+import { readPromptTags, writePromptTags, renderCompactTagChips, renderFilterTagButton, renderTagChip } from './tagChip';
+import type { PromptTag } from './tagTypes';
+import { showTagManagerDialog, closeTagManagerDialog } from './tagManagerDialog';
+import { showTagQuickEdit } from './tagQuickEdit';
+import { showTagSetupDialog } from './tagSetupDialog';
 
 type PromptItem = {
   id: string;
@@ -70,6 +83,7 @@ const STORAGE_KEYS = {
   position: StorageKeys.PROMPT_PANEL_POSITION,
   triggerPos: StorageKeys.PROMPT_TRIGGER_POSITION,
   selectedTags: StorageKeys.PROMPT_SELECTED_TAGS,
+  tags: StorageKeys.PROMPT_TAGS,
   language: StorageKeys.LANGUAGE, // reuse global language key
   theme: StorageKeys.PROMPT_THEME,
 } as const;
@@ -465,25 +479,13 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
     // Prevent duplicate injection
     if (document.getElementById(ID.trigger)) return { destroy: () => {} };
 
-    // Trigger button
+    // Trigger button — Gemini-style outlined icon
     const trigger = createEl('button', 'gv-pm-trigger');
     trigger.id = ID.trigger;
     trigger.setAttribute('aria-label', 'Prompt Manager');
-    const img = document.createElement('img');
-    img.width = 24;
-    img.height = 24;
-    img.alt = 'pm';
-    img.src = getRuntimeUrl('icon-32.png');
-    img.addEventListener(
-      'error',
-      () => {
-        // dev fallback
-        const devUrl = getRuntimeUrl('icon-32.png');
-        if (img.src !== devUrl) img.src = devUrl;
-      },
-      { once: true },
-    );
-    trigger.appendChild(img);
+    const triggerIcon = createEl('span', 'gv-pm-trigger-icon-wrap');
+    mountPromptTriggerIcon(triggerIcon);
+    trigger.appendChild(triggerIcon);
     if (changelogBadgeActive) {
       trigger.classList.add('gv-pm-trigger-new');
     }
@@ -770,9 +772,14 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
     const backupBtn = createEl('button', 'gv-pm-backup-btn');
     backupBtn.setAttribute('type', 'button');
 
+    const tagManagerBtn = createEl('button', 'gv-pm-tag-manager-btn');
+    tagManagerBtn.setAttribute('type', 'button');
+    tagManagerBtn.textContent = i18n.t('pm_tag_manager') || 'Tags';
+
     // Primary actions container
     const primaryActions = createEl('div', 'gv-pm-footer-actions');
     primaryActions.appendChild(backupBtn);
+    primaryActions.appendChild(tagManagerBtn);
 
     // Secondary actions container
     const secondaryActions = createEl('div', 'gv-pm-footer-secondary');
@@ -827,6 +834,12 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
     // State
     let items: PromptItem[] = await readStorage<PromptItem[]>(STORAGE_KEYS.items, []);
+    let tagRegistry: PromptTag[] = await readPromptTags();
+    const tagMigrationResult = migratePromptTags(items, tagRegistry);
+    if (tagMigrationResult.changed) {
+      tagRegistry = tagMigrationResult.tags;
+      await writePromptTags(tagRegistry);
+    }
     let open = false;
     // Restore the tag filter saved in a previous session (#729), reconciled
     // against the tags that still exist so a deleted/renamed tag can't strand
@@ -1289,10 +1302,6 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
     function renderTags(): void {
       const all = collectAllTags(items);
-      // Self-heal: if a previously selected tag's prompts were all deleted or
-      // retagged this session, drop it so the filter can't get stuck on a
-      // chip-less ghost tag that hides every prompt. Persist only on a real
-      // change to avoid redundant writes on every render.
       const valid = sanitizeSelectedTags(Array.from(selectedTags), all);
       if (valid.length !== selectedTags.size) {
         selectedTags = new Set(valid);
@@ -1309,18 +1318,52 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         renderList();
       });
       tagsWrap.appendChild(allBtn);
-      for (const tag of all) {
-        const btn = createEl('button', 'gv-pm-tag');
-        btn.textContent = tag;
-        btn.classList.toggle('active', selectedTags.has(tag));
-        btn.addEventListener('click', () => {
-          if (selectedTags.has(tag)) selectedTags.delete(tag);
-          else selectedTags.add(tag);
-          persistSelectedTags();
-          renderTags();
-          renderList();
-        });
-        tagsWrap.appendChild(btn);
+
+      const openTagQuickEdit = (tag: PromptTag, anchor: HTMLElement) => {
+        showTagQuickEdit(
+          tag,
+          tagRegistry,
+          anchor,
+          {
+            save: i18n.t('pm_save') || 'Save',
+            cancel: i18n.t('pm_cancel') || 'Cancel',
+            colorSection: i18n.t('pm_tag_color_section') || 'Color',
+            iconSection: i18n.t('pm_tag_icon_section') || 'Icon',
+          },
+          (key) => i18n.t(key as TranslationKey) || key,
+          (next) => {
+            tagRegistry = next;
+            renderTags();
+            renderList();
+          },
+        );
+      };
+
+      for (const normalized of all) {
+        const entity = findTagByNormalized(tagRegistry, normalized);
+        if (entity) {
+          tagsWrap.appendChild(
+            renderFilterTagButton(entity, tagRegistry, selectedTags.has(normalized), (tag) => {
+              if (selectedTags.has(tag)) selectedTags.delete(tag);
+              else selectedTags.add(tag);
+              persistSelectedTags();
+              renderTags();
+              renderList();
+            }, (tag, ev) => openTagQuickEdit(tag, ev.currentTarget as HTMLElement)),
+          );
+        } else {
+          const btn = createEl('button', 'gv-pm-tag');
+          btn.textContent = normalized;
+          btn.classList.toggle('active', selectedTags.has(normalized));
+          btn.addEventListener('click', () => {
+            if (selectedTags.has(normalized)) selectedTags.delete(normalized);
+            else selectedTags.add(normalized);
+            persistSelectedTags();
+            renderTags();
+            renderList();
+          });
+          tagsWrap.appendChild(btn);
+        }
       }
       requestAnimationFrame(syncTagScrollHint);
     }
@@ -1430,11 +1473,21 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
           if (e.button !== 0) return;
           e.preventDefault();
           e.stopPropagation();
-          void activatePromptText(it.text, promptInsertOnClick, {
+          void resolveAndActivatePrompt({
+            text: it.text,
+            insertOnClickEnabled: promptInsertOnClick,
+            variableLabels: {
+              title: i18n.t('pm_variable_title') || 'Fill variables',
+              confirm: i18n.t('pm_save') || 'Insert',
+              cancel: i18n.t('pm_cancel') || 'Cancel',
+              fieldLabel: (name) => name,
+            },
+            anchor: textBtn,
             copyText,
             expandInputCollapseIfNeeded,
             insertTextIntoChatInput,
           }).then((result) => {
+            if (result === 'cancelled') return;
             setNotice(
               result === 'inserted'
                 ? i18n.t('pm_inserted') || 'Inserted'
@@ -1447,11 +1500,21 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
           if (e.key !== 'Enter' && e.key !== ' ') return;
           e.preventDefault();
           e.stopPropagation();
-          void activatePromptText(it.text, promptInsertOnClick, {
+          void resolveAndActivatePrompt({
+            text: it.text,
+            insertOnClickEnabled: promptInsertOnClick,
+            variableLabels: {
+              title: i18n.t('pm_variable_title') || 'Fill variables',
+              confirm: i18n.t('pm_save') || 'Insert',
+              cancel: i18n.t('pm_cancel') || 'Cancel',
+              fieldLabel: (name) => name,
+            },
+            anchor: textBtn,
             copyText,
             expandInputCollapseIfNeeded,
             insertTextIntoChatInput,
           }).then((result) => {
+            if (result === 'cancelled') return;
             setNotice(
               result === 'inserted'
                 ? i18n.t('pm_inserted') || 'Inserted'
@@ -1503,18 +1566,45 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
           editingId = it.id;
         });
         const bottom = createEl('div', 'gv-pm-bottom');
-        const meta = createEl('div', 'gv-pm-item-meta');
-        for (const t of it.tags) {
-          const chip = createEl('span', 'gv-pm-chip');
-          chip.textContent = t;
-          chip.addEventListener('click', () => {
-            if (selectedTags.has(t)) selectedTags.delete(t);
-            else selectedTags.add(t);
-            renderTags();
-            renderList();
-          });
-          meta.appendChild(chip);
-        }
+        const meta = compactCollapsed
+          ? renderCompactTagChips(it.tags || [], tagRegistry, {
+              onClick: (normalized) => {
+                if (selectedTags.has(normalized)) selectedTags.delete(normalized);
+                else selectedTags.add(normalized);
+                renderTags();
+                renderList();
+              },
+            })
+          : (() => {
+              const metaEl = createEl('div', 'gv-pm-item-meta');
+              for (const t of it.tags) {
+                const entity = findTagByNormalized(tagRegistry, t);
+                if (entity) {
+                  metaEl.appendChild(
+                    renderTagChip(entity, tagRegistry, {
+                      variant: 'meta',
+                      onClick: (normalized) => {
+                        if (selectedTags.has(normalized)) selectedTags.delete(normalized);
+                        else selectedTags.add(normalized);
+                        renderTags();
+                        renderList();
+                      },
+                    }),
+                  );
+                } else {
+                  const chip = createEl('span', 'gv-pm-chip');
+                  chip.textContent = t;
+                  chip.addEventListener('click', () => {
+                    if (selectedTags.has(t)) selectedTags.delete(t);
+                    else selectedTags.add(t);
+                    renderTags();
+                    renderList();
+                  });
+                  metaEl.appendChild(chip);
+                }
+              }
+              return metaEl;
+            })();
         // Actions container at row bottom-right
         const actions = createEl('div', 'gv-pm-actions');
         const del = createEl('button', 'gv-pm-del');
@@ -1657,6 +1747,7 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
       settingsBtn.textContent = i18n.t('pm_settings');
       settingsBtn.title = i18n.t('pm_settings_tooltip');
+      tagManagerBtn.textContent = i18n.t('pm_tag_manager') || 'Tags';
       (addForm.querySelector('.gv-pm-input-name') as HTMLInputElement).placeholder =
         i18n.t('pm_name_placeholder');
       (addForm.querySelector('.gv-pm-input-text') as HTMLTextAreaElement).placeholder =
@@ -1957,9 +2048,22 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         const newItems = changes.gvPromptItems.newValue;
         if (Array.isArray(newItems)) {
           items = newItems;
+          const migrated = migratePromptTags(items, tagRegistry);
+          if (migrated.changed) {
+            tagRegistry = migrated.tags;
+            void writePromptTags(tagRegistry);
+          }
           renderTags();
           renderActiveList();
           setNotice(i18n.t('syncSuccess') || 'Synced', 'ok');
+        }
+      }
+      if (area === 'local' && changes[StorageKeys.PROMPT_TAGS]) {
+        const next = changes[StorageKeys.PROMPT_TAGS].newValue;
+        if (Array.isArray(next)) {
+          tagRegistry = next as PromptTag[];
+          renderTags();
+          renderActiveList();
         }
       }
       if (
@@ -1972,7 +2076,7 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
     };
 
     try {
-      browser.storage.onChanged.addListener(storageChangeHandler);
+      browser.storage?.onChanged?.addListener(storageChangeHandler);
     } catch {}
 
     addBtn.addEventListener('click', (ev) => {
@@ -2049,6 +2153,33 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       const tagsRaw = (addForm.querySelector('.gv-pm-input-tags') as HTMLInputElement).value;
       const tags = dedupeTags((tagsRaw || '').split(',').map((s) => s.trim()));
       if (!text.trim()) return;
+
+      const newTagNames = tags.filter((t) => !findTagByNormalized(tagRegistry, t));
+      if (newTagNames.length > 0) {
+        const created = await showTagSetupDialog(newTagNames, {
+          title: i18n.t('pm_tag_setup_title') || 'Set up new tags',
+          confirm: i18n.t('pm_save') || 'Save',
+          cancel: i18n.t('pm_cancel') || 'Cancel',
+          colorSection: i18n.t('pm_tag_color_section') || 'Color',
+          iconSection: i18n.t('pm_tag_icon_section') || 'Icon',
+        }, (key) => i18n.t(key as TranslationKey) || key);
+        if (!created) return;
+        const known = new Set(tagRegistry.map((t) => t.normalized));
+        for (const tag of created) {
+          if (!known.has(tag.normalized)) {
+            tagRegistry.push(tag);
+            known.add(tag.normalized);
+          }
+        }
+        await writePromptTags(tagRegistry);
+      } else {
+        const ensured = ensureTagsForNewNames(tagRegistry, tags);
+        if (ensured.changed) {
+          tagRegistry = ensured.registry;
+          await writePromptTags(tagRegistry);
+        }
+      }
+
       if (editingId) {
         const dup = items.some(
           (x) => x.id !== editingId && x.text.trim().toLowerCase() === text.trim().toLowerCase(),
@@ -2099,6 +2230,40 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       switchPanelView(panelView === 'starred' ? 'prompts' : 'starred');
     });
 
+    tagManagerBtn.addEventListener('click', () => {
+      showTagManagerDialog(tagRegistry, {
+        labels: {
+          title: i18n.t('pm_tag_manager') || 'Tag manager',
+          newTag: i18n.t('pm_tag_new') || 'New tag',
+          save: i18n.t('pm_save') || 'Save',
+          cancel: i18n.t('pm_cancel') || 'Cancel',
+          delete: i18n.t('pm_delete') || 'Delete',
+          deleteConfirm: (name) =>
+            (i18n.t('pm_tag_delete_confirm') || 'Delete tag "{name}"?').replace('{name}', name),
+          renamePlaceholder: i18n.t('pm_tag_name_placeholder') || 'Tag name',
+          colorSection: i18n.t('pm_tag_color_section') || 'Color',
+          iconSection: i18n.t('pm_tag_icon_section') || 'Icon',
+        },
+        translate: (key) => i18n.t(key as TranslationKey) || key,
+        onTagsChanged: (next) => {
+          tagRegistry = next;
+          // #region agent log
+          fetch('http://127.0.0.1:7723/ingest/d1e77644-14e4-4f23-9749-78488f439345',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'05d5a1'},body:JSON.stringify({sessionId:'05d5a1',location:'prompt/index.ts:onTagsChanged',message:'panel tag registry updated',data:{count:next.length,colors:next.map((t)=>({n:t.normalized,c:t.colorId}))},timestamp:Date.now(),hypothesisId:'H3-color,H5-color'})}).catch(()=>{});
+          // #endregion
+          renderTags();
+          renderList();
+        },
+        onPromptsTagRemoved: async (normalized) => {
+          items = removeTagFromPrompts(items, normalized);
+          await writeStorage(STORAGE_KEYS.items, items);
+        },
+        onPromptsTagRenamed: async (oldNormalized, newNormalized) => {
+          items = syncTagNamesOnPrompts(items, oldNormalized, newNormalized);
+          await writeStorage(STORAGE_KEYS.items, items);
+        },
+      });
+    });
+
     // Initialize
     refreshUITexts();
 
@@ -2115,6 +2280,9 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
           window.removeEventListener('pointerup', onTriggerDragEnd);
           tagsWrap.removeEventListener('scroll', syncTagScrollHint);
 
+          try {
+            browser.storage?.onChanged?.removeListener(storageChangeHandler);
+          } catch {}
           chrome.storage?.onChanged?.removeListener(storageChangeHandler);
 
           // Tear down the fast-tooltip singleton: cancel pending timer, remove
@@ -2136,7 +2304,10 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
           trigger.remove();
           panel.remove();
+          closeTagManagerDialog();
           document.querySelectorAll('.gv-pm-confirm').forEach((el) => el.remove());
+          document.querySelectorAll('.gv-pm-variable-dialog').forEach((el) => el.remove());
+          document.querySelectorAll('.gv-pm-tag-quick-edit').forEach((el) => el.remove());
         } catch (e) {
           console.error('[PromptManager] Destroy error:', e);
         }

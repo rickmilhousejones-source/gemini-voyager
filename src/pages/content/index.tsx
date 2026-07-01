@@ -47,6 +47,7 @@ import { startMermaid } from './mermaid/index';
 import { startBrandTheme } from './platformTheme';
 import { startPreventAutoScroll } from './preventAutoScroll/index';
 import { startPromptManager } from './prompt/index';
+import { startSlashPicker } from './slashPicker/index';
 import { startQuoteReply } from './quoteReply/index';
 import { startRemoteAnnouncements } from './remoteAnnouncements/index';
 import { startResponseCompleteNotification } from './responseNotification/index';
@@ -92,6 +93,7 @@ let initializationTimer: number | null = null;
 let folderManagerInstance: Awaited<ReturnType<typeof startFolderManager>> | null = null;
 
 let promptManagerInstance: Awaited<ReturnType<typeof startPromptManager>> | null = null;
+let slashPickerInstance: Awaited<ReturnType<typeof startSlashPicker>> | null = null;
 let quoteReplyCleanup: (() => void) | null = null;
 let inputVimModeCleanup: (() => void) | null = null;
 let sendBehaviorCleanup: (() => void) | null = null;
@@ -185,6 +187,7 @@ async function initializeFeatures(): Promise<void> {
       console.log('[Gemini Voyager] Custom website detected, starting Prompt Manager only');
 
       promptManagerInstance = await startPromptManager();
+      slashPickerInstance = await startSlashPicker();
       return;
     }
 
@@ -352,11 +355,21 @@ async function initializeFeatures(): Promise<void> {
     ) {
       promptManagerInstance = await startPromptManager();
       await delay(HEAVY_FEATURE_INIT_DELAY);
+      if (
+        location.hostname === 'aistudio.google.com' ||
+        location.hostname === 'aistudio.google.cn'
+      ) {
+        slashPickerInstance = await startSlashPicker();
+        await delay(LIGHT_FEATURE_INIT_DELAY);
+      }
     }
 
     if (location.hostname === 'gemini.google.com') {
       // Initialize Mermaid rendering (lightweight)
       startMermaid();
+      await delay(LIGHT_FEATURE_INIT_DELAY);
+
+      slashPickerInstance = await startSlashPicker();
       await delay(LIGHT_FEATURE_INIT_DELAY);
 
       // Initialize user message LaTeX rendering
@@ -608,6 +621,10 @@ function handleVisibilityChange(): void {
         if (promptManagerInstance) {
           promptManagerInstance.destroy();
           promptManagerInstance = null;
+        }
+        if (slashPickerInstance) {
+          slashPickerInstance.destroy();
+          slashPickerInstance = null;
         }
         if (quoteReplyCleanup) {
           quoteReplyCleanup();

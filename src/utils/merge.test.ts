@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ConversationId, FolderId } from '@/core/types/common';
 import type { ConversationReference, Folder, FolderData } from '@/core/types/folder';
 
-import { mergeFolderData } from './merge';
+import { mergeFolderData, mergePromptTags } from './merge';
 
 // Helper to create test folder
 function createFolder(
@@ -264,5 +264,35 @@ describe('mergeFolderData', () => {
       expect(result.folderContents.f1).toHaveLength(2);
       expect(result.folderContents.f1.map((c) => c.conversationId).sort()).toEqual(['c1', 'c2']);
     });
+  });
+});
+
+describe('mergePromptTags', () => {
+  it('merges by id preferring newer updatedAt', () => {
+    const local = [
+      {
+        id: 't1',
+        name: 'Local',
+        normalized: 'local',
+        colorId: 'blue',
+        iconId: 'label',
+        createdAt: 1,
+        updatedAt: 100,
+      },
+    ];
+    const cloud = [
+      {
+        id: 't1',
+        name: 'Cloud',
+        normalized: 'local',
+        colorId: 'red',
+        iconId: 'star',
+        createdAt: 1,
+        updatedAt: 200,
+      },
+    ];
+    const merged = mergePromptTags(local, cloud);
+    expect(merged[0].name).toBe('Cloud');
+    expect(merged[0].colorId).toBe('red');
   });
 });

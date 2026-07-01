@@ -35,6 +35,10 @@ import type { TranslationKey } from '@/utils/translations';
 
 const CUSTOM_CONTENT_SCRIPT_ID = 'gv-custom-content-script';
 const PLUGIN_CONTENT_SCRIPT_ID = 'gv-plugin-content-script';
+const GV_DYNAMIC_CONTENT_SCRIPT_IDS = [
+  CUSTOM_CONTENT_SCRIPT_ID,
+  PLUGIN_CONTENT_SCRIPT_ID,
+] as const;
 const CUSTOM_WEBSITE_KEY = 'gvPromptCustomWebsites';
 const FETCH_INTERCEPTOR_SCRIPT_ID = 'gv-fetch-interceptor';
 const RESPONSE_COMPLETE_OBSERVER_SCRIPT_ID = 'gv-response-complete-observer';
@@ -538,33 +542,91 @@ async function filterGrantedOrigins(patterns: string[]): Promise<string[]> {
   return granted;
 }
 
-async function syncCustomContentScripts(domains?: string[]): Promise<void> {
-  if (!chrome.scripting?.registerContentScripts) return;
+/** True when every bundled path resolves in the currently loaded extension package. */
+async function extensionResourcesExist(paths: string[]): Promise<boolean> {
+  for (const path of paths) {
+    try {
+      const response = await fetch(chrome.runtime.getURL(path));
+      if (!response.ok) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
 
-  const manifestContentScript = chrome.runtime.getManifest().content_scripts?.[0];
-  if (!manifestContentScript) return;
+/**
+ * Dev rebuilds change hashed asset names. If the service worker was not
+ * reloaded after a build, getManifest() still points at deleted files.
+ */
+async function warnIfManifestAssetsMissing(): Promise<boolean> {
+  const manifestScript = chrome.runtime.getManifest().content_scripts?.[0];
+  const paths = [...(manifestScript?.js ?? []), ...(manifestScript?.css ?? [])];
+  if (!paths.length) return true;
 
-  const domainList =
-    domains ??
-    (
-      await chrome.storage.sync.get({
-        [CUSTOM_WEBSITE_KEY]: [],
-      })
-    )[CUSTOM_WEBSITE_KEY];
+  const ok = await extensionResourcesExist(paths);
+  if (!ok) {
+    console.error(
+      '[Background] Extension assets are out of date (dev build changed hashed filenames).',
+      'Open chrome://extensions and click Reload on Voyager, then refresh Gemini.',
+      paths,
+    );
+    // #region agent log
+    fetch('http://127.0.0.1:7723/ingest/d1e77644-14e4-4f23-9749-78488f439345', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '05d5a1' },
+      body: JSON.stringify({
+        sessionId: '05d5a1',
+        location: 'background/index.ts:warnIfManifestAssetsMissing',
+        message: 'manifest assets missing after dev rebuild',
+        data: { paths },
+        timestamp: Date.now(),
+        hypothesisId: 'H-loader-stale',
+      }),
+    }).catch(() => {});
+    // #endregion
+  }
+  return ok;
+}
 
-  const matchPatterns = Array.from(
-    new Set((Array.isArray(domainList) ? domainList : []).flatMap(toMatchPatterns).filter(Boolean)),
-  );
+async function unregisterDynamicContentScript(id: string, expectedJs: string[]): Promise<void> {
+  if (!chrome.scripting?.unregisterContentScripts) return;
 
-  const grantedMatches = await filterGrantedOrigins(matchPatterns);
+  let shouldUnregister = true;
+  if (chrome.scripting.getRegisteredContentScripts) {
+    try {
+      const registered = await chrome.scripting.getRegisteredContentScripts();
+      const current = registered.find((script) => script.id === id);
+      if (!current) {
+        shouldUnregister = false;
+      } else {
+        const currentJs = current.js ?? [];
+        shouldUnregister =
+          currentJs.length !== expectedJs.length ||
+          currentJs.some((path, index) => path !== expectedJs[index]);
+      }
+    } catch {
+      // Fall back to unconditional unregister below.
+    }
+  }
+
+  if (!shouldUnregister) return;
 
   try {
-    await chrome.scripting.unregisterContentScripts({ ids: [CUSTOM_CONTENT_SCRIPT_ID] });
+    await chrome.scripting.unregisterContentScripts({ ids: [id] });
   } catch {
     // No-op if script was not registered
   }
+}
 
-  if (!grantedMatches.length) return;
+function getManifestContentScriptResources(): {
+  jsResources: string[];
+  cssResources: string[] | undefined;
+  runAt: 'document_start' | 'document_end' | 'document_idle';
+  allFrames: boolean | undefined;
+} | null {
+  const manifestContentScript = chrome.runtime.getManifest().content_scripts?.[0];
+  if (!manifestContentScript) return null;
 
   const runAt =
     manifestContentScript.run_at === 'document_start'
@@ -580,6 +642,41 @@ async function syncCustomContentScripts(domains?: string[]): Promise<void> {
     ? manifestContentScript.css?.map(toRelativeExtensionPath)
     : manifestContentScript.css;
 
+  return {
+    jsResources,
+    cssResources,
+    runAt,
+    allFrames: manifestContentScript.all_frames,
+  };
+}
+
+async function syncCustomContentScripts(domains?: string[]): Promise<void> {
+  if (!chrome.scripting?.registerContentScripts) return;
+
+  const resources = getManifestContentScriptResources();
+  if (!resources) return;
+  if (!(await warnIfManifestAssetsMissing())) return;
+
+  const { jsResources, cssResources, runAt, allFrames } = resources;
+
+  const domainList =
+    domains ??
+    (
+      await chrome.storage.sync.get({
+        [CUSTOM_WEBSITE_KEY]: [],
+      })
+    )[CUSTOM_WEBSITE_KEY];
+
+  const matchPatterns = Array.from(
+    new Set((Array.isArray(domainList) ? domainList : []).flatMap(toMatchPatterns).filter(Boolean)),
+  );
+
+  const grantedMatches = await filterGrantedOrigins(matchPatterns);
+
+  await unregisterDynamicContentScript(CUSTOM_CONTENT_SCRIPT_ID, jsResources);
+
+  if (!grantedMatches.length) return;
+
   try {
     await chrome.scripting.registerContentScripts([
       {
@@ -587,7 +684,7 @@ async function syncCustomContentScripts(domains?: string[]): Promise<void> {
         js: jsResources,
         css: cssResources,
         matches: grantedMatches,
-        allFrames: manifestContentScript.all_frames,
+        allFrames,
         runAt,
         persistAcrossSessions: true,
       },
@@ -595,6 +692,20 @@ async function syncCustomContentScripts(domains?: string[]): Promise<void> {
     console.log('[Background] Custom content scripts registered for', grantedMatches);
   } catch (error) {
     console.error('[Background] Failed to register custom content scripts:', error);
+    // #region agent log
+    fetch('http://127.0.0.1:7723/ingest/d1e77644-14e4-4f23-9749-78488f439345', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '05d5a1' },
+      body: JSON.stringify({
+        sessionId: '05d5a1',
+        location: 'background/index.ts:syncCustomContentScripts',
+        message: 'register custom content scripts failed',
+        data: { jsResources, error: String(error) },
+        timestamp: Date.now(),
+        hypothesisId: 'H-loader-stale',
+      }),
+    }).catch(() => {});
+    // #endregion
   }
 }
 
@@ -658,33 +769,18 @@ async function injectPluginScriptIntoOpenTabs(
 async function syncPluginContentScripts(): Promise<void> {
   if (!chrome.scripting?.registerContentScripts) return;
 
-  const manifestContentScript = chrome.runtime.getManifest().content_scripts?.[0];
-  if (!manifestContentScript) return;
+  const resources = getManifestContentScriptResources();
+  if (!resources) return;
+  if (!(await warnIfManifestAssetsMissing())) return;
+
+  const { jsResources, cssResources, runAt, allFrames } = resources;
 
   const origins = await getEnabledPluginOrigins();
   const grantedMatches = await filterGrantedOrigins(origins);
 
-  try {
-    await chrome.scripting.unregisterContentScripts({ ids: [PLUGIN_CONTENT_SCRIPT_ID] });
-  } catch {
-    // No-op if the script was not registered.
-  }
+  await unregisterDynamicContentScript(PLUGIN_CONTENT_SCRIPT_ID, jsResources);
 
   if (!grantedMatches.length) return;
-
-  const runAt =
-    manifestContentScript.run_at === 'document_start'
-      ? 'document_start'
-      : manifestContentScript.run_at === 'document_end'
-        ? 'document_end'
-        : 'document_idle';
-
-  const jsResources = isFirefox()
-    ? (manifestContentScript.js || []).map(toRelativeExtensionPath)
-    : manifestContentScript.js || [];
-  const cssResources = isFirefox()
-    ? manifestContentScript.css?.map(toRelativeExtensionPath)
-    : manifestContentScript.css;
 
   try {
     await chrome.scripting.registerContentScripts([
@@ -693,7 +789,7 @@ async function syncPluginContentScripts(): Promise<void> {
         js: jsResources,
         css: cssResources,
         matches: grantedMatches,
-        allFrames: manifestContentScript.all_frames,
+        allFrames,
         runAt,
         persistAcrossSessions: true,
       },
@@ -706,11 +802,33 @@ async function syncPluginContentScripts(): Promise<void> {
   }
 }
 
+async function resyncDynamicContentScriptsAfterUpdate(): Promise<void> {
+  if (!chrome.scripting?.getRegisteredContentScripts) {
+    await syncCustomContentScripts();
+    await syncPluginContentScripts();
+    return;
+  }
+
+  try {
+    const registered = await chrome.scripting.getRegisteredContentScripts();
+    const gvIds = registered
+      .map((script) => script.id)
+      .filter((id) => GV_DYNAMIC_CONTENT_SCRIPT_IDS.includes(id as (typeof GV_DYNAMIC_CONTENT_SCRIPT_IDS)[number]));
+    if (gvIds.length) {
+      await chrome.scripting.unregisterContentScripts({ ids: gvIds });
+    }
+  } catch {
+    // Best-effort cleanup before re-registering with fresh manifest paths.
+  }
+
+  await syncCustomContentScripts();
+  await syncPluginContentScripts();
+}
+
 // Initial sync for persisted permissions
 void disableRetiredTabTitleUpdateSetting();
 void cleanupLegacyGeneratedUiCapturePermission();
-void syncCustomContentScripts();
-void syncPluginContentScripts();
+void resyncDynamicContentScriptsAfterUpdate();
 void refreshPluginSiteDomains();
 
 // Initial fetch interceptor registration
@@ -718,6 +836,12 @@ void registerFetchInterceptor();
 
 // Initial response completion observer registration
 void syncResponseCompleteObserverRegistration();
+
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === 'install' || details.reason === 'update') {
+    void resyncDynamicContentScriptsAfterUpdate();
+  }
+});
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'sync') return;

@@ -10,6 +10,7 @@
  * - gemini-voyager-starred.json
  */
 import type { FolderData } from '@/core/types/folder';
+import { StorageKeys } from '@/core/types/common';
 import type {
   FolderExportPayload,
   ForkExportPayload,
@@ -189,12 +190,24 @@ export class GoogleDriveSyncService {
         data: folders,
       };
 
-      // Create prompt payload
+      // Create prompt payload (include tag registry when available)
+      let tagRegistry: PromptExportPayload['tagRegistry'];
+      try {
+        const tagResult = await chrome.storage.local.get([StorageKeys.PROMPT_TAGS]);
+        const raw = tagResult[StorageKeys.PROMPT_TAGS];
+        if (Array.isArray(raw) && raw.length > 0) {
+          tagRegistry = raw as PromptExportPayload['tagRegistry'];
+        }
+      } catch {
+        /* optional */
+      }
+
       const promptPayload: PromptExportPayload = {
         format: 'gemini-voyager.prompts.v1',
         exportedAt: now.toISOString(),
         version: EXTENSION_VERSION,
         items: prompts,
+        ...(tagRegistry ? { tagRegistry } : {}),
       };
 
       const settingsPayload: SettingsExportPayload | null = settings

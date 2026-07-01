@@ -61,6 +61,19 @@ export interface PromptItem {
 }
 
 /**
+ * Prompt tag registry entry (icon + color metadata).
+ */
+export interface PromptTag {
+  id: string;
+  name: string;
+  normalized: string;
+  colorId: string;
+  iconId: string;
+  createdAt: number;
+  updatedAt?: number;
+}
+
+/**
  * Folder export payload format (matches existing export format)
  */
 export interface FolderExportPayload {
@@ -78,6 +91,8 @@ export interface PromptExportPayload {
   exportedAt: string;
   version?: string;
   items: PromptItem[];
+  /** Optional tag registry (icon/color metadata). */
+  tagRegistry?: PromptTag[];
 }
 
 /**

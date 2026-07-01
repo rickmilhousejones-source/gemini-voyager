@@ -5,12 +5,15 @@
  */
 import { AppError, ErrorCode } from '@/core/errors/AppError';
 import type { Result } from '@/core/types/common';
+import { StorageKeys } from '@/core/types/common';
 import { EXTENSION_VERSION } from '@/core/utils/version';
+import { mergePromptTags } from '@/utils/merge';
 
 import type { PromptExportPayload, PromptItem } from '../types/backup';
 
 const EXPORT_FORMAT = 'gemini-voyager.prompts.v1' as const;
 const STORAGE_KEY = 'gvPromptItems';
+const TAG_STORAGE_KEY = StorageKeys.PROMPT_TAGS;
 
 /**
  * Service for handling prompt import/export operations
@@ -20,12 +23,13 @@ export class PromptImportExportService {
    * Export prompt data to a JSON payload
    * Uses centralized version management to ensure consistency
    */
-  static exportToPayload(items: PromptItem[]): PromptExportPayload {
+  static exportToPayload(items: PromptItem[], tagRegistry?: import('@/core/types/sync').PromptTag[]): PromptExportPayload {
     return {
       format: EXPORT_FORMAT,
       exportedAt: new Date().toISOString(),
       version: EXTENSION_VERSION,
       items,
+      ...(tagRegistry && tagRegistry.length > 0 ? { tagRegistry } : {}),
     };
   }
 
@@ -163,6 +167,44 @@ export class PromptImportExportService {
     }
   }
 
+  static async loadPromptTags(): Promise<Result<import('@/core/types/sync').PromptTag[]>> {
+    try {
+      const raw = localStorage.getItem(TAG_STORAGE_KEY);
+      if (raw === null) {
+        return { success: true, data: [] };
+      }
+      const tags = JSON.parse(raw) as import('@/core/types/sync').PromptTag[];
+      return { success: true, data: Array.isArray(tags) ? tags : [] };
+    } catch (error) {
+      return {
+        success: false,
+        error: new AppError(
+          ErrorCode.STORAGE_READ_FAILED,
+          'Failed to load prompt tags from localStorage',
+          { key: TAG_STORAGE_KEY },
+          error instanceof Error ? error : undefined,
+        ),
+      };
+    }
+  }
+
+  static async savePromptTags(tags: import('@/core/types/sync').PromptTag[]): Promise<Result<void>> {
+    try {
+      localStorage.setItem(TAG_STORAGE_KEY, JSON.stringify(tags));
+      return { success: true, data: undefined };
+    } catch (error) {
+      return {
+        success: false,
+        error: new AppError(
+          ErrorCode.STORAGE_WRITE_FAILED,
+          'Failed to save prompt tags to localStorage',
+          { key: TAG_STORAGE_KEY, tagCount: tags.length },
+          error instanceof Error ? error : undefined,
+        ),
+      };
+    }
+  }
+
   /**
    * Generate filename for export with timestamp
    */
@@ -187,7 +229,12 @@ export class PromptImportExportService {
       return result;
     }
 
-    const payload = this.exportToPayload(result.data);
+    const tagResult = await this.loadPromptTags();
+    if (!tagResult.success) {
+      return tagResult;
+    }
+
+    const payload = this.exportToPayload(result.data, tagResult.data);
     return {
       success: true,
       data: JSON.stringify(payload, null, 2),
@@ -252,6 +299,18 @@ export class PromptImportExportService {
       const saveResult = await this.savePrompts(mergedItems);
       if (!saveResult.success) {
         return saveResult;
+      }
+
+      if (payload.tagRegistry?.length) {
+        const tagLoadResult = await this.loadPromptTags();
+        if (!tagLoadResult.success) {
+          return tagLoadResult;
+        }
+        const mergedTags = mergePromptTags(tagLoadResult.data, payload.tagRegistry);
+        const tagSaveResult = await this.savePromptTags(mergedTags);
+        if (!tagSaveResult.success) {
+          return tagSaveResult;
+        }
       }
 
       return {

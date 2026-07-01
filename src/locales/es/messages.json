@@ -111,6 +111,98 @@
     "message": "Todo",
     "description": "All tags chip"
   },
+  "pm_tag_manager": {
+    "message": "Tag manager",
+    "description": "Open prompt tag manager"
+  },
+  "pm_tag_new": {
+    "message": "New tag",
+    "description": "Create a new prompt tag"
+  },
+  "pm_tag_setup_title": {
+    "message": "Set up new tags",
+    "description": "Dialog title when saving prompts with new tag names"
+  },
+  "pm_tag_delete_confirm": {
+    "message": "Delete tag \"{name}\"?",
+    "description": "Confirm tag deletion"
+  },
+  "pm_tag_name_placeholder": {
+    "message": "Tag name",
+    "description": "Tag name input placeholder"
+  },
+  "pm_tag_color_section": {
+    "message": "Color",
+    "description": "Tag color section label"
+  },
+  "pm_tag_icon_section": {
+    "message": "Icon",
+    "description": "Tag icon section label"
+  },
+  "pm_variable_title": {
+    "message": "Fill variables",
+    "description": "Variable dialog title before inserting a prompt"
+  },
+  "pm_tag_icon_label": {
+    "message": "Label",
+    "description": "Tag icon preset: label"
+  },
+  "pm_tag_icon_edit": {
+    "message": "Edit",
+    "description": "Tag icon preset: edit"
+  },
+  "pm_tag_icon_image": {
+    "message": "Image",
+    "description": "Tag icon preset: image"
+  },
+  "pm_tag_icon_search": {
+    "message": "Search",
+    "description": "Tag icon preset: search"
+  },
+  "pm_tag_icon_star": {
+    "message": "Star",
+    "description": "Tag icon preset: star"
+  },
+  "pm_tag_icon_code": {
+    "message": "Code",
+    "description": "Tag icon preset: code"
+  },
+  "pm_tag_icon_translate": {
+    "message": "Translate",
+    "description": "Tag icon preset: translate"
+  },
+  "pm_tag_icon_brush": {
+    "message": "Brush",
+    "description": "Tag icon preset: brush"
+  },
+  "pm_tag_icon_folder": {
+    "message": "Folder",
+    "description": "Tag icon preset: folder"
+  },
+  "pm_tag_icon_bolt": {
+    "message": "Bolt",
+    "description": "Tag icon preset: bolt"
+  },
+  "pm_tag_icon_article": {
+    "message": "Article",
+    "description": "Tag icon preset: article"
+  },
+  "pm_tag_icon_camera": {
+    "message": "Camera",
+    "description": "Tag icon preset: camera"
+  },
+  "pm_tag_icon_palette": {
+    "message": "Palette",
+    "description": "Tag icon preset: palette"
+  },
+  "pm_tag_icon_psychology": {
+    "message": "Psychology",
+    "description": "Tag icon preset: psychology"
+  },
+  "pm_tag_icon_work": {
+    "message": "Work",
+    "description": "Tag icon preset: work"
+  },
   "pm_empty": {
     "message": "No hay prompts todavía",
     "description": "Empty state"

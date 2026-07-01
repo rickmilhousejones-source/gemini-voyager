@@ -12,5 +12,5 @@
   ],
   "ext": "tsx,css,html,ts,json",
   "ignore": ["src/**/*.spec.ts"],
-  "exec": "npx vite build --config vite.config.chrome.ts --mode development"
+  "exec": "node scripts/dev-chrome-build.cjs"
 }

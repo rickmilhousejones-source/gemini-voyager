@@ -174,14 +174,12 @@ describe('platform theme CSS', () => {
     expect(noticeBlock).toContain('var(--gv-pm-brand-soft)');
   });
 
-  it('paints the Gemini FAB with the brand, beating the AI Studio neutral trigger', () => {
+  it('paints the Gemini FAB with neutral chrome on theme-host', () => {
     const css = readFileSync(resolve(process.cwd(), 'public/contentStyle.css'), 'utf8');
-    // The .theme-host.*-theme trigger override must exist (specificity 0,3,0) and
-    // reference the brand, or the body.*-theme neutral rules repaint it white/black.
     const fabBlock =
       css.match(/\.theme-host\.light-theme \.gv-pm-trigger[\s\S]*?\{([\s\S]*?)\}/)?.[1] ?? '';
-    expect(fabBlock).toContain('var(--gv-pm-brand, var(--gv-pm-brand-default))');
-    expect(fabBlock).toContain('var(--gv-pm-brand-fg, var(--gv-pm-brand-fg-default))');
+    expect(fabBlock).toContain('rgba(255, 255, 255');
+    expect(fabBlock).toContain('#3c4043');
   });
 
   it('never re-declares the JS-overridable --gv-pm-brand on .theme-host (would shadow the inline custom colour)', () => {

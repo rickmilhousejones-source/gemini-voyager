@@ -615,6 +615,11 @@ function isInputRelatedElement(element: HTMLElement, container: HTMLElement): bo
     '[data-test-id*="attachment"]',
     '[data-test-id*="upload"]',
     '[data-test-id*="file"]',
+    // Voyager prompt / slash picker overlays
+    '.gv-pm-panel',
+    '.gv-slash-picker',
+    '.gv-pm-tag-manager',
+    '.gv-pm-variable-dialog',
   ];
 
   // Combine selectors into a single string for better performance

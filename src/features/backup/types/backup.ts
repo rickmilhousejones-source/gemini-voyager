@@ -29,6 +29,8 @@ export interface PromptExportPayload {
   exportedAt: string;
   version?: string;
   items: PromptItem[];
+  /** Optional tag registry (icon/color metadata). */
+  tagRegistry?: import('@/core/types/sync').PromptTag[];
 }
 
 /**

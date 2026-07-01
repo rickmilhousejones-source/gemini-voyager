@@ -111,6 +111,98 @@
     "message": "全部",
     "description": "全部标签"
   },
+  "pm_tag_manager": {
+    "message": "标签管理",
+    "description": "打开提示词标签管理"
+  },
+  "pm_tag_new": {
+    "message": "新建标签",
+    "description": "创建新标签"
+  },
+  "pm_tag_setup_title": {
+    "message": "设置新标签",
+    "description": "保存带新标签名的提示词时的对话框标题"
+  },
+  "pm_tag_delete_confirm": {
+    "message": "删除标签「{name}」？",
+    "description": "确认删除标签"
+  },
+  "pm_tag_name_placeholder": {
+    "message": "标签名称",
+    "description": "标签名称输入占位符"
+  },
+  "pm_tag_color_section": {
+    "message": "颜色",
+    "description": "标签颜色区域"
+  },
+  "pm_tag_icon_section": {
+    "message": "图标",
+    "description": "标签图标区域"
+  },
+  "pm_variable_title": {
+    "message": "填写变量",
+    "description": "插入提示词前填写变量"
+  },
+  "pm_tag_icon_label": {
+    "message": "标签",
+    "description": "标签图标：标签"
+  },
+  "pm_tag_icon_edit": {
+    "message": "编辑",
+    "description": "标签图标：编辑"
+  },
+  "pm_tag_icon_image": {
+    "message": "图片",
+    "description": "标签图标：图片"
+  },
+  "pm_tag_icon_search": {
+    "message": "搜索",
+    "description": "标签图标：搜索"
+  },
+  "pm_tag_icon_star": {
+    "message": "星标",
+    "description": "标签图标：星标"
+  },
+  "pm_tag_icon_code": {
+    "message": "代码",
+    "description": "标签图标：代码"
+  },
+  "pm_tag_icon_translate": {
+    "message": "翻译",
+    "description": "标签图标：翻译"
+  },
+  "pm_tag_icon_brush": {
+    "message": "画笔",
+    "description": "标签图标：画笔"
+  },
+  "pm_tag_icon_folder": {
+    "message": "文件夹",
+    "description": "标签图标：文件夹"
+  },
+  "pm_tag_icon_bolt": {
+    "message": "闪电",
+    "description": "标签图标：闪电"
+  },
+  "pm_tag_icon_article": {
+    "message": "文章",
+    "description": "标签图标：文章"
+  },
+  "pm_tag_icon_camera": {
+    "message": "相机",
+    "description": "标签图标：相机"
+  },
+  "pm_tag_icon_palette": {
+    "message": "调色板",
+    "description": "标签图标：调色板"
+  },
+  "pm_tag_icon_psychology": {
+    "message": "心理",
+    "description": "标签图标：心理"
+  },
+  "pm_tag_icon_work": {
+    "message": "工作",
+    "description": "标签图标：工作"
+  },
   "pm_empty": {
     "message": "暂无 prompt",
     "description": "空状态"

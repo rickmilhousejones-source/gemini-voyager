@@ -15,13 +15,19 @@ It’s now part of your vault.
 
 ### 2. Categorize
 
-Add tags like `#coding`, `#email`, or `#research`.
+Add tags like `#coding`, `#email`, or `#research`. Open **Tag manager** from the panel footer to pick a **color and icon** for each tag. Right-click a tag chip in the filter bar for a quick edit.
+
 Keep your tools sharpened and sorted.
 
 ### 3. Deploy
 
 Next time you need it, don't type it again.
-Open the manager, search by tag or keyword, and click to insert.
+
+- **Slash command (Gemini web)**: At the start of the input (or after a space), type `/` and continue typing to filter. Pick a prompt from the lightweight dropdown.
+- **Prompt panel**: Open the manager, search by tag or keyword, and click to insert.
+
+Prompts can include <code v-pre>{{variable:default}}</code> placeholders — Voyager asks you to fill them before inserting.
+
 One click. Infinite leverage.
 
 ![Prompt Manager](/assets/gemini-prompt-manager.png)
