@@ -68,7 +68,7 @@
     "description": "新增 prompt 按钮"
   },
   "pm_search_placeholder": {
-    "message": "搜索 prompt 或标签",
+    "message": "搜索 prompt 或分组",
     "description": "搜索占位符"
   },
   "popupSettingsSearchPlaceholder": {
@@ -2334,5 +2334,37 @@
   "themeColorReset": {
     "message": "恢复默认",
     "description": "Reset accent colour to default"
+  },
+  "pm_group_ungrouped": {
+    "message": "未分组",
+    "description": "pm_group_ungrouped"
+  },
+  "pm_group_manager": {
+    "message": "分组管理",
+    "description": "pm_group_manager"
+  },
+  "pm_group_new": {
+    "message": "新建分组",
+    "description": "pm_group_new"
+  },
+  "pm_group_name_placeholder": {
+    "message": "分组名称",
+    "description": "pm_group_name_placeholder"
+  },
+  "pm_group_delete_confirm": {
+    "message": "删除分组「{name}」？组内 prompt 将移至未分组。",
+    "description": "pm_group_delete_confirm"
+  },
+  "pm_group_field": {
+    "message": "分组",
+    "description": "pm_group_field"
+  },
+  "pm_group_move_up": {
+    "message": "上移",
+    "description": "pm_group_move_up"
+  },
+  "pm_group_move_down": {
+    "message": "下移",
+    "description": "pm_group_move_down"
   }
 }

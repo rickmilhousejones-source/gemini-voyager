@@ -68,7 +68,7 @@
     "description": "Add prompt button"
   },
   "pm_search_placeholder": {
-    "message": "Поиск промптов или тегов",
+    "message": "Поиск промптов или групп",
     "description": "Search placeholder"
   },
   "popupSettingsSearchPlaceholder": {
@@ -2334,5 +2334,37 @@
   "themeColorReset": {
     "message": "Сбросить по умолчанию",
     "description": "Reset accent colour to default"
+  },
+  "pm_group_ungrouped": {
+    "message": "Без группы",
+    "description": "pm_group_ungrouped"
+  },
+  "pm_group_manager": {
+    "message": "Управление группами",
+    "description": "pm_group_manager"
+  },
+  "pm_group_new": {
+    "message": "Новая группа",
+    "description": "pm_group_new"
+  },
+  "pm_group_name_placeholder": {
+    "message": "Название группы",
+    "description": "pm_group_name_placeholder"
+  },
+  "pm_group_delete_confirm": {
+    "message": "Удалить группу «{name}»? Промпты будут перемещены в «Без группы».",
+    "description": "pm_group_delete_confirm"
+  },
+  "pm_group_field": {
+    "message": "Группа",
+    "description": "pm_group_field"
+  },
+  "pm_group_move_up": {
+    "message": "Вверх",
+    "description": "pm_group_move_up"
+  },
+  "pm_group_move_down": {
+    "message": "Вниз",
+    "description": "pm_group_move_down"
   }
 }

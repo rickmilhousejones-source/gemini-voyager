@@ -10,8 +10,8 @@ import { restoreBackupableSyncSettings } from '@/core/services/SettingsBackupSer
 import { StorageKeys } from '@/core/types/common';
 import type { FolderData } from '@/core/types/folder';
 import type {
+  PromptGroup,
   PromptItem,
-  PromptTag,
   SettingsExportPayload,
   SyncAccountScope,
   SyncMode,
@@ -35,7 +35,7 @@ import { useLanguage } from '../../../contexts/LanguageContext';
 import {
   mergeFolderData,
   mergePrompts,
-  mergePromptTags,
+  mergePromptGroups,
   mergeStarredMessages,
   mergeTimelineHierarchy,
 } from '../../../utils/merge';
@@ -56,11 +56,14 @@ function isPromptItemArray(value: unknown): value is PromptItem[] {
     value.every((item) => {
       if (typeof item !== 'object' || item === null) return false;
       const prompt = item as Record<string, unknown>;
+      const groupOk =
+        prompt.groupId === null ||
+        prompt.groupId === undefined ||
+        typeof prompt.groupId === 'string';
       return (
         typeof prompt.id === 'string' &&
         typeof prompt.text === 'string' &&
-        Array.isArray(prompt.tags) &&
-        prompt.tags.every((tag) => typeof tag === 'string') &&
+        groupOk &&
         typeof prompt.createdAt === 'number'
       );
     })
@@ -475,7 +478,7 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
               state?: SyncState;
               data?: {
                 folders?: { data?: FolderData };
-                prompts?: Pick<import('@/core/types/sync').PromptExportPayload, 'items' | 'tagRegistry'>;
+                prompts?: Pick<import('@/core/types/sync').PromptExportPayload, 'items' | 'groupRegistry'>;
                 settings?: SettingsExportPayload;
                 starred?: { data?: StarredMessagesData };
                 timelineHierarchy?: { data?: TimelineHierarchyData };
@@ -500,7 +503,7 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
         // Get current local data for merging - prioritize Content Script
         let localFolders: FolderData = { folders: [], folderContents: {} };
         let localPrompts: PromptItem[] = [];
-        let localPromptTags: PromptTag[] = [];
+        let localPromptGroups: PromptGroup[] = [];
         let localTimelineHierarchy: TimelineHierarchyData = { conversations: {} };
 
         // 1. Try to get fresh folder data from active tab
@@ -541,7 +544,7 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
           const storageResult = await chrome.storage.local.get([
             folderStorageKey,
             StorageKeys.PROMPT_ITEMS,
-            StorageKeys.PROMPT_TAGS,
+            StorageKeys.PROMPT_GROUPS,
             ...getTimelineHierarchyStorageKeysToRead(timelineHierarchyAccountScope?.accountKey),
           ]);
           const storedFoldersValue = storageResult[folderStorageKey];
@@ -562,9 +565,9 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
           }
 
           if (platform === 'gemini') {
-            const storedTags = storageResult[StorageKeys.PROMPT_TAGS];
-            if (Array.isArray(storedTags)) {
-              localPromptTags = storedTags as PromptTag[];
+            const storedGroups = storageResult[StorageKeys.PROMPT_GROUPS];
+            if (Array.isArray(storedGroups)) {
+              localPromptGroups = storedGroups as PromptGroup[];
             }
           }
 
@@ -596,7 +599,7 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
           ? cloudFolderDataRaw
           : { folders: [], folderContents: {} };
         const cloudPromptItems = cloudPromptsPayload?.items || [];
-        const cloudPromptTags = cloudPromptsPayload?.tagRegistry || [];
+        const cloudPromptGroups = cloudPromptsPayload?.groupRegistry || [];
         const cloudStarredData: StarredMessagesData = cloudStarredPayload?.data || { messages: {} };
         const cloudTimelineHierarchyData: TimelineHierarchyData =
           cloudTimelineHierarchyPayload?.data || { conversations: {} };
@@ -648,9 +651,9 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
         const nextPrompts = shouldOverwrite
           ? cloudPromptItems
           : mergePrompts(localPrompts, cloudPromptItems);
-        const nextPromptTags = shouldOverwrite
-          ? cloudPromptTags
-          : mergePromptTags(localPromptTags, cloudPromptTags);
+        const nextPromptGroups = shouldOverwrite
+          ? cloudPromptGroups
+          : mergePromptGroups(localPromptGroups, cloudPromptGroups);
         const nextStarred = shouldOverwrite
           ? cloudStarredData
           : mergeStarredMessages(localStarred, cloudStarredData);
@@ -685,7 +688,7 @@ export function CloudSyncSettings({ sourceTabId }: CloudSyncSettingsProps = {}) 
         // Only save prompts and starred for Gemini platform
         if (platform === 'gemini') {
           storageUpdate[StorageKeys.PROMPT_ITEMS] = nextPrompts;
-          storageUpdate[StorageKeys.PROMPT_TAGS] = nextPromptTags;
+          storageUpdate[StorageKeys.PROMPT_GROUPS] = nextPromptGroups;
           storageUpdate.geminiTimelineStarredMessages = nextStarred;
           storageUpdate[timelineHierarchyStorageKey] = nextTimelineHierarchy;
         }

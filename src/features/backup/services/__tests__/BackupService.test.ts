@@ -52,7 +52,7 @@ describe('BackupService', () => {
         {
           id: 'prompt-1',
           text: 'Test prompt',
-          tags: ['test'],
+          groupId: null,
           createdAt: 1,
         },
       ]),

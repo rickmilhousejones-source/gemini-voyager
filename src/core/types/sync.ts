@@ -55,20 +55,17 @@ export interface SyncState {
 export interface PromptItem {
   id: string;
   text: string;
-  tags: string[];
+  groupId: string | null;
   createdAt: number;
   updatedAt?: number;
+  name?: string;
 }
 
-/**
- * Prompt tag registry entry (icon + color metadata).
- */
-export interface PromptTag {
+export interface PromptGroup {
   id: string;
   name: string;
-  normalized: string;
-  colorId: string;
-  iconId: string;
+  order: number;
+  iconId?: string;
   createdAt: number;
   updatedAt?: number;
 }
@@ -87,12 +84,14 @@ export interface FolderExportPayload {
  * Prompt export payload format (matches existing export format)
  */
 export interface PromptExportPayload {
-  format: 'gemini-voyager.prompts.v1';
+  format: 'gemini-voyager.prompts.v1' | 'gemini-voyager.prompts.v2';
   exportedAt: string;
   version?: string;
   items: PromptItem[];
-  /** Optional tag registry (icon/color metadata). */
-  tagRegistry?: PromptTag[];
+  /** Prompt group registry (v2+). */
+  groupRegistry?: PromptGroup[];
+  /** @deprecated Legacy tag registry — ignored on import. */
+  tagRegistry?: unknown;
 }
 
 /**

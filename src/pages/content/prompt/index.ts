@@ -12,11 +12,8 @@ import browser from 'webextension-polyfill';
 import { logger } from '@/core/services/LoggerService';
 import { promptStorageService } from '@/core/services/StorageService';
 import { type StorageKey, StorageKeys } from '@/core/types/common';
-import { isSafari, shouldShowSafariUpdateReminder } from '@/core/utils/browser';
 import { isExtensionContextInvalidatedError } from '@/core/utils/extensionContext';
 import { migrateFromLocalStorage } from '@/core/utils/storageMigration';
-import { shouldShowUpdateReminderForCurrentVersion } from '@/core/utils/updateReminder';
-import { compareVersions } from '@/core/utils/version';
 import { getCurrentLanguage, getTranslationSync, initI18n, setCachedLanguage } from '@/utils/i18n';
 import {
   APP_LANGUAGES,
@@ -27,45 +24,45 @@ import {
 } from '@/utils/language';
 import type { TranslationKey } from '@/utils/translations';
 
-import { hasUnreadChangelog, openChangelog, showChangelogModalDirect } from '../changelog/index';
+import { hasUnreadChangelog, showChangelogModalDirect } from '../changelog/index';
 import { insertTextIntoChatInput } from '../chatInput/index';
 import { expandInputCollapseIfNeeded } from '../inputCollapse/index';
 import { StarredMessagesService } from '../timeline/StarredMessagesService';
 import type { StarredMessage } from '../timeline/starredTypes';
 import { extractPlainTitle } from './compactTitle';
-import { getScrollHintState } from './scrollHint';
 import {
   buildStarredMessageUrl,
   filterStarredMessages,
   formatStarredMessageTime,
 } from './starredLibrary';
-import { sanitizeSelectedTags } from './tagFilterState';
 import { mountPromptTriggerIcon } from './promptTriggerIcon';
+import { setLockButtonIcon, setThemeToggleIcon } from './panelIcons';
 import { resolveAndActivatePrompt } from './promptActivation';
 import {
-  ensureTagsForNewNames,
-  migratePromptTags,
-  removeTagFromPrompts,
-  syncTagNamesOnPrompts,
-  findTagByNormalized,
-} from './tagMigration';
-import { readPromptTags, writePromptTags, renderCompactTagChips, renderFilterTagButton, renderTagChip } from './tagChip';
-import type { PromptTag } from './tagTypes';
-import { showTagManagerDialog, closeTagManagerDialog } from './tagManagerDialog';
-import { showTagQuickEdit } from './tagQuickEdit';
-import { showTagSetupDialog } from './tagSetupDialog';
+  buildGroupSections,
+  clearPromptsFromGroup,
+  migrateItemsToGroups,
+  findGroupById,
+  previewText,
+  runPromptGroupsMigrationIfNeeded,
+  sortGroups,
+} from './groupMigration';
+import {
+  readCollapsedGroupIds,
+  readPromptGroups,
+  writeCollapsedGroupIds,
+  writePromptGroups,
+} from './groupStorage';
+import { showGroupManagerDialog, closeGroupManagerDialog } from './groupManagerDialog';
+import { createGroupIconElement, resolveGroupIconId, UNGROUPED_GROUP_ICON_ID } from './groupIcons';
+import type { PromptGroup } from './groupTypes';
 
 type PromptItem = {
   id: string;
   text: string;
-  tags: string[];
+  groupId: string | null;
   createdAt: number;
   updatedAt?: number;
-  /**
-   * Optional user-authored label used as the headline in compact list view.
-   * Falls back to `extractPlainTitle(text)` when absent so existing prompts
-   * render without any migration. Introduced for issue #586 feedback item 4c.
-   */
   name?: string;
 };
 
@@ -82,9 +79,8 @@ const STORAGE_KEYS = {
   locked: StorageKeys.PROMPT_PANEL_LOCKED,
   position: StorageKeys.PROMPT_PANEL_POSITION,
   triggerPos: StorageKeys.PROMPT_TRIGGER_POSITION,
-  selectedTags: StorageKeys.PROMPT_SELECTED_TAGS,
-  tags: StorageKeys.PROMPT_TAGS,
-  language: StorageKeys.LANGUAGE, // reuse global language key
+  groups: StorageKeys.PROMPT_GROUPS,
+  language: StorageKeys.LANGUAGE,
   theme: StorageKeys.PROMPT_THEME,
 } as const;
 
@@ -93,8 +89,6 @@ const ID = {
   panel: 'gv-pm-panel',
 } as const;
 
-const LATEST_VERSION_CACHE_KEY = 'gvLatestVersionCache';
-const LATEST_VERSION_MAX_AGE = 1000 * 60 * 60 * 6; // 6 hours
 const SPONSOR_HEART_PATH_16 =
   'M7.655 14.916h-.002l-.006-.003l-.018-.01a22 22 0 0 1-3.744-2.584C2.045 10.731 0 8.35 0 5.5C0 2.836 2.086 1 4.25 1C5.797 1 7.153 1.802 8 3.02C8.847 1.802 10.203 1 11.75 1C13.914 1 16 2.836 16 5.5c0 2.85-2.044 5.231-3.886 6.818a22 22 0 0 1-3.433 2.414a7 7 0 0 1-.31.17l-.018.01l-.008.004a.75.75 0 0 1-.69 0';
 
@@ -182,12 +176,6 @@ function uid(): string {
  */
 const pmLogger = logger.createChild('PromptManager');
 
-const normalizeVersionString = (version?: string | null): string | null => {
-  if (!version) return null;
-  const trimmed = version.trim();
-  return trimmed ? trimmed.replace(/^v/i, '') : null;
-};
-
 async function readStorage<T>(key: StorageKey, fallback: T): Promise<T> {
   const result = await promptStorageService.get<T>(key);
   if (result.success) {
@@ -205,54 +193,6 @@ async function writeStorage<T>(key: StorageKey, value: T): Promise<void> {
       errorDetails: result.error,
     });
   }
-}
-
-async function getLatestVersionCached(): Promise<string | null> {
-  try {
-    if (!browser.runtime?.id) return null;
-
-    const now = Date.now();
-    const cache = await browser.storage.local.get(LATEST_VERSION_CACHE_KEY);
-    const cached = cache?.[LATEST_VERSION_CACHE_KEY] as
-      | { version?: string; fetchedAt?: number }
-      | undefined;
-    if (
-      cached &&
-      cached.version &&
-      cached.fetchedAt &&
-      now - cached.fetchedAt < LATEST_VERSION_MAX_AGE
-    ) {
-      return cached.version;
-    }
-
-    const resp = await fetch(
-      'https://api.github.com/repos/Nagi-ovo/gemini-voyager/releases/latest',
-      {
-        headers: { Accept: 'application/vnd.github+json' },
-      },
-    );
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}`);
-    }
-
-    const data = await resp.json();
-    const candidate =
-      typeof data.tag_name === 'string'
-        ? data.tag_name
-        : typeof data.name === 'string'
-          ? data.name
-          : null;
-
-    if (candidate) {
-      await browser.storage.local.set({
-        [LATEST_VERSION_CACHE_KEY]: { version: candidate, fetchedAt: now },
-      });
-      return candidate;
-    }
-  } catch (error) {
-    pmLogger.debug('Latest version check failed', { error });
-  }
-  return null;
 }
 
 function createEl<K extends keyof HTMLElementTagNameMap>(
@@ -300,25 +240,6 @@ function renderSupportLinkLabel(link: HTMLAnchorElement, label: string): void {
   link.replaceChildren(createSponsorHeartIcon(), labelEl);
 }
 
-function dedupeTags(tags: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of tags) {
-    const t = raw.trim().toLowerCase();
-    if (!t) continue;
-    if (!seen.has(t)) {
-      seen.add(t);
-      out.push(t);
-    }
-  }
-  return out;
-}
-
-function collectAllTags(items: PromptItem[]): string[] {
-  const set = new Set<string>();
-  for (const it of items) for (const t of it.tags || []) set.add(String(t).toLowerCase());
-  return Array.from(set).sort();
-}
 
 function copyText(text: string): Promise<void> {
   try {
@@ -578,59 +499,6 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
     titleText.textContent = 'Voyager';
     title.appendChild(titleText);
 
-    const manifestVersion = chrome?.runtime?.getManifest?.()?.version;
-    const currentVersionNormalized = normalizeVersionString(manifestVersion);
-    const versionBadge = document.createElement('span');
-    versionBadge.className = 'gv-pm-version';
-    versionBadge.style.cursor = 'pointer';
-    versionBadge.title = manifestVersion
-      ? `${i18n.t('extensionVersion')} ${manifestVersion}`
-      : i18n.t('extensionVersion');
-    versionBadge.textContent = manifestVersion ?? '...';
-
-    // Version badge always opens changelog modal
-    versionBadge.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      closePanel();
-      // The user explicitly asked for release notes: if the modal cannot
-      // open (chunk load blocked, missing notes for this version, …) fall
-      // back to the GitHub releases page instead of silently doing nothing,
-      // and log the error so site-specific failures (e.g. on Claude/ChatGPT
-      // custom websites) are diagnosable from the console.
-      const openReleasesFallback = () => {
-        window.open('https://github.com/Nagi-ovo/gemini-voyager/releases', '_blank', 'noopener');
-      };
-      // If badge was active, clear it
-      if (changelogBadgeActive) {
-        changelogBadgeActive = false;
-        trigger.classList.remove('gv-pm-trigger-new');
-        versionBadge.classList.remove('gv-pm-version-outdated');
-        let shown = false;
-        try {
-          shown = await showChangelogModalDirect();
-        } catch (error) {
-          logger.error('Changelog modal failed to open', { error: String(error) });
-        }
-        if (!shown) openReleasesFallback();
-        if (pmHiddenByUser) {
-          trigger.style.display = 'none';
-        }
-      } else {
-        let shown = false;
-        try {
-          shown = await openChangelog();
-        } catch (error) {
-          logger.error('Changelog modal failed to open', { error: String(error) });
-        }
-        if (!shown) openReleasesFallback();
-      }
-    });
-
-    // Show NEW mark on version badge when changelog badge is active
-    if (changelogBadgeActive) {
-      versionBadge.classList.add('gv-pm-version-outdated');
-    }
-
     // Theme toggle
     const themeToggle = createEl('button', 'gv-pm-theme-toggle');
     themeToggle.setAttribute('type', 'button');
@@ -640,6 +508,7 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       currentPMTheme = theme;
       panel.setAttribute('data-gv-theme', theme);
       themeToggle.classList.toggle('gv-pm-theme-dark', theme === 'dark');
+      setThemeToggleIcon(themeToggle, theme === 'dark');
       themeToggle.title = theme === 'dark' ? i18n.t('pm_theme_light') : i18n.t('pm_theme_dark');
       themeToggle.setAttribute('aria-label', themeToggle.title);
     }
@@ -678,34 +547,6 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
     titleRow.appendChild(title);
     titleRow.appendChild(themeToggle);
-    titleRow.appendChild(versionBadge);
-
-    // Check for newer version on GitHub (visual indicator only, no link)
-    (async () => {
-      const isSafariBrowser = isSafari();
-      const safariUpdateReminderEnabled = isSafariBrowser && shouldShowSafariUpdateReminder();
-
-      if (isSafariBrowser && !safariUpdateReminderEnabled) return;
-
-      const shouldShowUpdateNotification = shouldShowUpdateReminderForCurrentVersion({
-        currentVersion: currentVersionNormalized,
-        isSafariBrowser,
-        safariReminderEnabled: safariUpdateReminderEnabled,
-      });
-      if (!shouldShowUpdateNotification) return;
-
-      const latest = await getLatestVersionCached();
-      const latestNormalized = normalizeVersionString(latest);
-      const hasUpdate =
-        currentVersionNormalized && latestNormalized
-          ? compareVersions(latestNormalized, currentVersionNormalized) > 0
-          : false;
-
-      if (!hasUpdate || !latestNormalized) return;
-
-      versionBadge.classList.add('gv-pm-version-outdated');
-      versionBadge.title = `${i18n.t('latestVersionLabel')}: v${latestNormalized}`;
-    })();
 
     const controls = createEl('div', 'gv-pm-controls');
 
@@ -728,7 +569,6 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
     const lockBtn = createEl('button', 'gv-pm-lock');
     lockBtn.setAttribute('aria-pressed', 'false');
-    lockBtn.setAttribute('data-icon', '🔓');
     lockBtn.title = i18n.t('pm_lock');
 
     const addBtn = createEl('button', 'gv-pm-add');
@@ -756,14 +596,6 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
     searchWrap.appendChild(searchInput);
     searchWrap.appendChild(viewModeBtn);
 
-    const tagsWrapOuter = createEl('div', 'gv-pm-tags-wrap');
-    const tagsWrap = createEl('div', 'gv-pm-tags');
-    const tagsScrollHint = createEl('div', 'gv-pm-tags-scroll-hint');
-    tagsScrollHint.setAttribute('aria-hidden', 'true');
-    tagsScrollHint.textContent = '▼';
-    tagsWrapOuter.appendChild(tagsWrap);
-    tagsWrapOuter.appendChild(tagsScrollHint);
-
     const list = createEl('div', 'gv-pm-list');
 
     const footer = createEl('div', 'gv-pm-footer');
@@ -772,14 +604,14 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
     const backupBtn = createEl('button', 'gv-pm-backup-btn');
     backupBtn.setAttribute('type', 'button');
 
-    const tagManagerBtn = createEl('button', 'gv-pm-tag-manager-btn');
-    tagManagerBtn.setAttribute('type', 'button');
-    tagManagerBtn.textContent = i18n.t('pm_tag_manager') || 'Tags';
+    const groupManagerBtn = createEl('button', 'gv-pm-group-manager-btn');
+    groupManagerBtn.setAttribute('type', 'button');
+    groupManagerBtn.textContent = i18n.t('pm_group_manager') || 'Manage groups';
 
     // Primary actions container
     const primaryActions = createEl('div', 'gv-pm-footer-actions');
     primaryActions.appendChild(backupBtn);
-    primaryActions.appendChild(tagManagerBtn);
+    primaryActions.appendChild(groupManagerBtn);
 
     // Secondary actions container
     const secondaryActions = createEl('div', 'gv-pm-footer-secondary');
@@ -808,9 +640,8 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         <textarea class="gv-pm-input-text" placeholder="${escapeHtml(
           i18n.t('pm_prompt_placeholder') || 'Prompt text',
         )}" rows="3"></textarea>
-        <input class="gv-pm-input-tags" type="text" placeholder="${escapeHtml(
-          i18n.t('pm_tags_placeholder') || 'Tags (comma separated)',
-        )}" />
+        <label class="gv-pm-group-field-label">${escapeHtml(i18n.t('pm_group_field') || 'Group')}</label>
+        <select class="gv-pm-input-group"></select>
         <div class="gv-pm-add-actions">
           <span class="gv-pm-inline-hint" aria-live="polite"></span>
           <button type="submit" class="gv-pm-save">${escapeHtml(i18n.t('pm_save') || 'Save')}</button>
@@ -826,7 +657,6 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
     panel.appendChild(header);
     panel.appendChild(searchWrap);
-    panel.appendChild(tagsWrapOuter);
     panel.appendChild(addForm);
     panel.appendChild(list);
     panel.appendChild(footer);
@@ -834,23 +664,11 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
     // State
     let items: PromptItem[] = await readStorage<PromptItem[]>(STORAGE_KEYS.items, []);
-    let tagRegistry: PromptTag[] = await readPromptTags();
-    const tagMigrationResult = migratePromptTags(items, tagRegistry);
-    if (tagMigrationResult.changed) {
-      tagRegistry = tagMigrationResult.tags;
-      await writePromptTags(tagRegistry);
-    }
+    const groupMigrationResult = await runPromptGroupsMigrationIfNeeded(items);
+    items = groupMigrationResult.items as PromptItem[];
+    let groups: PromptGroup[] = await readPromptGroups();
+    let collapsedGroupIds: Set<string> = await readCollapsedGroupIds();
     let open = false;
-    // Restore the tag filter saved in a previous session (#729), reconciled
-    // against the tags that still exist so a deleted/renamed tag can't strand
-    // the list on a chip-less filter. Local-only on purpose — see
-    // STORAGE_KEYS.selectedTags / tagFilterState.ts.
-    let selectedTags: Set<string> = new Set<string>(
-      sanitizeSelectedTags(
-        await readStorage<string[]>(STORAGE_KEYS.selectedTags, []),
-        collectAllTags(items),
-      ),
-    );
     let locked = !!(await readStorage<boolean>(STORAGE_KEYS.locked, false));
     let savedPos = await readStorage<PanelPosition | null>(STORAGE_KEYS.position, null);
     let dragging = false;
@@ -885,14 +703,38 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       hint.classList.toggle('err', kind === 'err');
     }
 
-    function syncTagScrollHint(): void {
-      const { isOverflowing, showHint } = getScrollHintState(
-        tagsWrap.scrollTop,
-        tagsWrap.clientHeight,
-        tagsWrap.scrollHeight,
-      );
-      tagsWrapOuter.classList.toggle('gv-pm-tags-scrollable', isOverflowing);
-      tagsWrapOuter.classList.toggle('gv-pm-tags-scroll-end', !showHint);
+    function populateGroupSelect(selectedGroupId: string | null): void {
+      const sel = addForm.querySelector('.gv-pm-input-group') as HTMLSelectElement | null;
+      if (!sel) return;
+      const ungroupedLabel = i18n.t('pm_group_ungrouped') || 'Ungrouped';
+      sel.replaceChildren();
+      const ungroupedOpt = document.createElement('option');
+      ungroupedOpt.value = '';
+      ungroupedOpt.textContent = ungroupedLabel;
+      sel.appendChild(ungroupedOpt);
+      for (const g of sortGroups(groups)) {
+        const opt = document.createElement('option');
+        opt.value = g.id;
+        opt.textContent = g.name;
+        sel.appendChild(opt);
+      }
+      sel.value = selectedGroupId ?? '';
+    }
+
+    function isSectionOpen(sectionKey: string, searchActive: boolean): boolean {
+      if (searchActive) return true;
+      return !collapsedGroupIds.has(sectionKey);
+    }
+
+    function persistCollapsedGroups(): void {
+      void writeCollapsedGroupIds(collapsedGroupIds);
+    }
+
+    function toggleSectionCollapse(sectionKey: string, searchActive: boolean): void {
+      if (searchActive) return;
+      if (collapsedGroupIds.has(sectionKey)) collapsedGroupIds.delete(sectionKey);
+      else collapsedGroupIds.add(sectionKey);
+      persistCollapsedGroups();
     }
 
     /* Fast, interactive hover tooltip for compact rows.
@@ -1121,7 +963,6 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         : i18n.t('pm_search_placeholder');
       addBtn.classList.toggle('gv-hidden', isStarredView);
       viewModeBtn.classList.toggle('gv-hidden', isStarredView);
-      tagsWrapOuter.classList.toggle('gv-hidden', isStarredView);
       secondaryActions.classList.toggle('gv-hidden', isStarredView);
       if (isStarredView) {
         addForm.classList.add('gv-hidden');
@@ -1175,9 +1016,7 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       if (panelView === 'starred') {
         void loadStarredMessages();
       } else {
-        renderTags();
         renderList();
-        requestAnimationFrame(syncTagScrollHint);
       }
     }
 
@@ -1294,125 +1133,29 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       }
     })();
 
-    // Fire-and-forget: the in-memory Set drives the UI; a failed write just
-    // means the filter isn't restored next session. Never blocks a click.
-    function persistSelectedTags(): void {
-      void writeStorage(STORAGE_KEYS.selectedTags, Array.from(selectedTags));
-    }
-
-    function renderTags(): void {
-      const all = collectAllTags(items);
-      const valid = sanitizeSelectedTags(Array.from(selectedTags), all);
-      if (valid.length !== selectedTags.size) {
-        selectedTags = new Set(valid);
-        persistSelectedTags();
-      }
-      tagsWrap.innerHTML = '';
-      const allBtn = createEl('button', 'gv-pm-tag');
-      allBtn.textContent = i18n.t('pm_all_tags') || 'All';
-      allBtn.classList.toggle('active', selectedTags.size === 0);
-      allBtn.addEventListener('click', () => {
-        selectedTags = new Set();
-        persistSelectedTags();
-        renderTags();
-        renderList();
-      });
-      tagsWrap.appendChild(allBtn);
-
-      const openTagQuickEdit = (tag: PromptTag, anchor: HTMLElement) => {
-        showTagQuickEdit(
-          tag,
-          tagRegistry,
-          anchor,
-          {
-            save: i18n.t('pm_save') || 'Save',
-            cancel: i18n.t('pm_cancel') || 'Cancel',
-            colorSection: i18n.t('pm_tag_color_section') || 'Color',
-            iconSection: i18n.t('pm_tag_icon_section') || 'Icon',
-          },
-          (key) => i18n.t(key as TranslationKey) || key,
-          (next) => {
-            tagRegistry = next;
-            renderTags();
-            renderList();
-          },
-        );
-      };
-
-      for (const normalized of all) {
-        const entity = findTagByNormalized(tagRegistry, normalized);
-        if (entity) {
-          tagsWrap.appendChild(
-            renderFilterTagButton(entity, tagRegistry, selectedTags.has(normalized), (tag) => {
-              if (selectedTags.has(tag)) selectedTags.delete(tag);
-              else selectedTags.add(tag);
-              persistSelectedTags();
-              renderTags();
-              renderList();
-            }, (tag, ev) => openTagQuickEdit(tag, ev.currentTarget as HTMLElement)),
-          );
-        } else {
-          const btn = createEl('button', 'gv-pm-tag');
-          btn.textContent = normalized;
-          btn.classList.toggle('active', selectedTags.has(normalized));
-          btn.addEventListener('click', () => {
-            if (selectedTags.has(normalized)) selectedTags.delete(normalized);
-            else selectedTags.add(normalized);
-            persistSelectedTags();
-            renderTags();
-            renderList();
-          });
-          tagsWrap.appendChild(btn);
-        }
-      }
-      requestAnimationFrame(syncTagScrollHint);
-    }
-
     function renderList(): void {
       if (panelView !== 'prompts') {
         renderStarredList();
         return;
       }
-      // Rebuilding the list destroys every row's DOM. Any pending hover-open
-      // timer would fire against a detached target (getBoundingClientRect()
-      // returns zeros → tooltip mispositioned) and any visible tooltip would
-      // display stale content. Close it up front so every re-render starts
-      // from a clean state.
       hideTooltip();
 
-      // Preserve the user's scroll position across the wipe-and-rebuild.
-      // Without this, actions like expand/collapse, search, tag filter,
-      // view-mode toggle, and cloud-sync updates all snap the list back to
-      // the top — most painful on the expand button, which fires a re-render
-      // right as the user is reading further down the list.
       const savedScrollTop = list.scrollTop;
 
       const q = (searchInput.value || '').trim().toLowerCase();
-      const selectedTagList = Array.from(selectedTags);
-      const filtered = items.filter((it) => {
-        const okTag =
-          selectedTagList.length === 0 || selectedTagList.every((t) => it.tags.includes(t));
-        if (!okTag) return false;
-        if (!q) return true;
-        // Include the user-authored name so searching for the label shown in
-        // compact mode always finds the prompt even when the Markdown body
-        // doesn't contain that string.
-        return (
-          it.text.toLowerCase().includes(q) ||
-          it.tags.some((t) => t.includes(q)) ||
-          (it.name ? it.name.toLowerCase().includes(q) : false)
-        );
-      });
+      const searchActive = q.length > 0;
+      const ungroupedLabel = i18n.t('pm_group_ungrouped') || 'Ungrouped';
+      const sections = buildGroupSections(items, groups, q, ungroupedLabel);
       list.innerHTML = '';
-      if (filtered.length === 0) {
+      if (sections.length === 0) {
         const empty = createEl('div', 'gv-pm-empty');
         empty.textContent = i18n.t('pm_empty') || 'No prompts yet';
         list.appendChild(empty);
-        // Nothing to scroll back to; avoid setting scrollTop on an empty list.
         return;
       }
       const frag = document.createDocumentFragment();
-      for (const it of filtered) {
+
+      const appendPromptRow = (parent: HTMLElement, it: PromptItem): void => {
         const row = createEl('div', 'gv-pm-item');
 
         // Create text container with expand/collapse functionality
@@ -1424,32 +1167,36 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         // Markdown preview used in comfortable mode.
         const isExpanded = expandedItems.has(it.id);
         const compactCollapsed = viewMode === 'compact' && !isExpanded;
+        const comfortPreview = viewMode === 'comfortable' && !isExpanded;
         if (compactCollapsed) {
           row.classList.add('gv-pm-item-compact');
         }
 
-        // Render Markdown + KaTeX preview (sanitized)
         const md = document.createElement('div');
         md.className = 'gv-md';
 
         if (compactCollapsed) {
           md.classList.add('gv-pm-compact-title');
-          // User-authored `name` takes precedence so prompts can be labeled
-          // independently of their Markdown body.
           md.textContent = (it.name && it.name.trim()) || extractPlainTitle(it.text);
-          // Attach a lightweight, fast-opening hover tooltip for peek.
           attachPromptTooltip(textBtn, it.text, panel);
-        } else {
-          // Apply collapsed class if not expanded (comfortable mode: 5-line clamp)
-          if (!isExpanded) {
-            md.classList.add('gv-md-collapsed');
-          }
+        } else if (comfortPreview) {
+          md.classList.add('gv-pm-comfort-preview');
+          const titleEl = document.createElement('div');
+          titleEl.className = 'gv-pm-comfort-title';
+          titleEl.textContent = (it.name && it.name.trim()) || extractPlainTitle(it.text);
+          const descEl = document.createElement('div');
+          descEl.className = 'gv-pm-comfort-desc';
+          descEl.textContent = previewText(it.text);
+          md.appendChild(titleEl);
+          md.appendChild(descEl);
+        } else if (!isExpanded) {
+          md.classList.add('gv-md-collapsed');
         }
 
         // Insert element into DOM first, then render to ensure KaTeX can detect document mode correctly
         textBtn.appendChild(md);
 
-        if (!compactCollapsed) {
+        if (!compactCollapsed && !comfortPreview) {
           // Defer rendering to next frame to ensure element is fully attached
           requestAnimationFrame(() => {
             void ensureMarkdown()
@@ -1541,11 +1288,7 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         });
 
         textContainer.appendChild(textBtn);
-        // In compact mode the expand button is moved into the right-side
-        // actions cluster (see below) so all right-aligned controls form a
-        // single group and can't overlap each other. In comfortable mode
-        // it stays inline with the text for progressive disclosure.
-        if (!compactCollapsed) {
+        if (!compactCollapsed && !comfortPreview) {
           textContainer.appendChild(expandBtn);
         }
 
@@ -1558,54 +1301,12 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
           // Start inline edit using the add form fields
           (addForm.querySelector('.gv-pm-input-name') as HTMLInputElement).value = it.name ?? '';
           (addForm.querySelector('.gv-pm-input-text') as HTMLTextAreaElement).value = it.text;
-          (addForm.querySelector('.gv-pm-input-tags') as HTMLInputElement).value = (
-            it.tags || []
-          ).join(', ');
+          populateGroupSelect(it.groupId);
           addForm.classList.remove('gv-hidden');
           (addForm.querySelector('.gv-pm-input-name') as HTMLInputElement).focus();
           editingId = it.id;
         });
         const bottom = createEl('div', 'gv-pm-bottom');
-        const meta = compactCollapsed
-          ? renderCompactTagChips(it.tags || [], tagRegistry, {
-              onClick: (normalized) => {
-                if (selectedTags.has(normalized)) selectedTags.delete(normalized);
-                else selectedTags.add(normalized);
-                renderTags();
-                renderList();
-              },
-            })
-          : (() => {
-              const metaEl = createEl('div', 'gv-pm-item-meta');
-              for (const t of it.tags) {
-                const entity = findTagByNormalized(tagRegistry, t);
-                if (entity) {
-                  metaEl.appendChild(
-                    renderTagChip(entity, tagRegistry, {
-                      variant: 'meta',
-                      onClick: (normalized) => {
-                        if (selectedTags.has(normalized)) selectedTags.delete(normalized);
-                        else selectedTags.add(normalized);
-                        renderTags();
-                        renderList();
-                      },
-                    }),
-                  );
-                } else {
-                  const chip = createEl('span', 'gv-pm-chip');
-                  chip.textContent = t;
-                  chip.addEventListener('click', () => {
-                    if (selectedTags.has(t)) selectedTags.delete(t);
-                    else selectedTags.add(t);
-                    renderTags();
-                    renderList();
-                  });
-                  metaEl.appendChild(chip);
-                }
-              }
-              return metaEl;
-            })();
-        // Actions container at row bottom-right
         const actions = createEl('div', 'gv-pm-actions');
         const del = createEl('button', 'gv-pm-del');
         del.title = i18n.t('pm_delete') || 'Delete';
@@ -1663,26 +1364,53 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
             items = items.filter((x) => x.id !== it.id);
             await writeStorage(STORAGE_KEYS.items, items);
             cleanup();
-            renderTags();
             renderList();
             setNotice(i18n.t('pm_deleted') || 'Deleted', 'ok');
           });
         });
 
-        // Append text container instead of textBtn
         row.appendChild(textContainer);
 
-        // In compact mode, expand sits at the left of edit/del so the cluster
-        // reads [chip] [▼] [✎] [🗑] from left to right — one cohesive group.
-        if (compactCollapsed) {
+        if (compactCollapsed || comfortPreview) {
           actions.appendChild(expandBtn);
         }
         actions.appendChild(editBtn);
         actions.appendChild(del);
-        bottom.appendChild(meta);
         bottom.appendChild(actions);
         row.appendChild(bottom);
-        frag.appendChild(row);
+        parent.appendChild(row);
+      };
+
+      for (const section of sections) {
+        const open = isSectionOpen(section.key, searchActive);
+        const header = createEl('button', 'gv-pm-group-header');
+        header.type = 'button';
+        header.classList.toggle('gv-pm-group-header-collapsed', !open);
+        const caret = createEl('span', 'gv-pm-group-caret');
+        caret.textContent = open ? '▾' : '▸';
+        caret.setAttribute('aria-hidden', 'true');
+        const label = createEl('span', 'gv-pm-group-label');
+        label.textContent = `${section.name} (${section.items.length})`;
+        const sectionIconId = section.groupId
+          ? resolveGroupIconId(findGroupById(groups, section.groupId))
+          : UNGROUPED_GROUP_ICON_ID;
+        header.appendChild(createGroupIconElement(sectionIconId, 'gv-pm-group-header-icon', 14));
+        header.appendChild(caret);
+        header.appendChild(label);
+        header.addEventListener('click', (e) => {
+          e.preventDefault();
+          toggleSectionCollapse(section.key, searchActive);
+          renderList();
+        });
+        frag.appendChild(header);
+
+        if (open) {
+          const itemsWrap = createEl('div', 'gv-pm-group-items');
+          for (const it of section.items) {
+            appendPromptRow(itemsWrap, it as PromptItem);
+          }
+          frag.appendChild(itemsWrap);
+        }
       }
       list.appendChild(frag);
       // Restore scroll position after the DOM is laid out. Clamped to the
@@ -1715,7 +1443,6 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         panel.style.left = `${pos.left}px`;
         panel.style.top = `${pos.top}px`;
       }
-      requestAnimationFrame(syncTagScrollHint);
     }
 
     function closePanel(): void {
@@ -1727,8 +1454,7 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
     function applyLockUI(): void {
       lockBtn.classList.toggle('active', locked);
       lockBtn.setAttribute('aria-pressed', locked ? 'true' : 'false');
-      // When locked, show 🔒; when unlocked, show 🔓.
-      lockBtn.setAttribute('data-icon', locked ? '🔒' : '🔓');
+      setLockButtonIcon(lockBtn, locked);
       lockBtn.title = locked ? i18n.t('pm_unlock') || 'Unlock' : i18n.t('pm_lock') || 'Lock';
       panel.classList.toggle('gv-locked', locked);
     }
@@ -1747,20 +1473,20 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
       settingsBtn.textContent = i18n.t('pm_settings');
       settingsBtn.title = i18n.t('pm_settings_tooltip');
-      tagManagerBtn.textContent = i18n.t('pm_tag_manager') || 'Tags';
+      groupManagerBtn.textContent = i18n.t('pm_group_manager') || 'Manage groups';
       (addForm.querySelector('.gv-pm-input-name') as HTMLInputElement).placeholder =
         i18n.t('pm_name_placeholder');
       (addForm.querySelector('.gv-pm-input-text') as HTMLTextAreaElement).placeholder =
         i18n.t('pm_prompt_placeholder');
-      (addForm.querySelector('.gv-pm-input-tags') as HTMLInputElement).placeholder =
-        i18n.t('pm_tags_placeholder');
+      const groupLabel = addForm.querySelector('.gv-pm-group-field-label') as HTMLLabelElement | null;
+      if (groupLabel) groupLabel.textContent = i18n.t('pm_group_field') || 'Group';
+      populateGroupSelect(null);
       (addForm.querySelector('.gv-pm-save') as HTMLButtonElement).textContent = i18n.t('pm_save');
       (addForm.querySelector('.gv-pm-cancel') as HTMLButtonElement).textContent =
         i18n.t('pm_cancel');
       applyLockUI();
       applyViewModeUI();
       applyPanelViewUI();
-      renderTags();
       renderActiveList();
     }
 
@@ -1833,7 +1559,6 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       if (changelogBadgeActive) {
         changelogBadgeActive = false;
         trigger.classList.remove('gv-pm-trigger-new');
-        versionBadge.classList.remove('gv-pm-version-outdated');
         try {
           await showChangelogModalDirect();
         } catch {
@@ -1850,24 +1575,17 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       else {
         openPanel();
         if (panelView === 'starred') void loadStarredMessages();
-        else {
-          renderTags();
-          renderList();
-        }
+        else renderList();
       }
     });
 
-    // Handle window resize - constrain trigger and reposition panel
-    // Handle window resize - constrain trigger and reposition panel
     const onWindowResize = () => {
       constrainTriggerPosition();
       onReposition();
-      syncTagScrollHint();
     };
     window.addEventListener('resize', onWindowResize, { passive: true });
 
     window.addEventListener('scroll', onReposition, { passive: true });
-    tagsWrap.addEventListener('scroll', syncTagScrollHint, { passive: true });
 
     // Close when clicking outside of the manager (panel/trigger/confirm are exceptions)
     const onWindowPointerDown = (ev: PointerEvent) => {
@@ -2028,11 +1746,9 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
               changelogBadgeActive = true;
               trigger.classList.add('gv-pm-trigger-new');
               trigger.style.display = '';
-              versionBadge.classList.toggle('gv-pm-version-outdated', changelogBadgeActive);
             } else if (!shouldBadge && changelogBadgeActive) {
               changelogBadgeActive = false;
               trigger.classList.remove('gv-pm-trigger-new');
-              versionBadge.classList.toggle('gv-pm-version-outdated', changelogBadgeActive);
               if (pmHiddenByUser) {
                 trigger.style.display = 'none';
               }
@@ -2047,22 +1763,16 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         pmLogger.info('Prompt data changed in chrome.storage.local, reloading...');
         const newItems = changes.gvPromptItems.newValue;
         if (Array.isArray(newItems)) {
-          items = newItems;
-          const migrated = migratePromptTags(items, tagRegistry);
-          if (migrated.changed) {
-            tagRegistry = migrated.tags;
-            void writePromptTags(tagRegistry);
-          }
-          renderTags();
+          items = migrateItemsToGroups(newItems) as PromptItem[];
           renderActiveList();
           setNotice(i18n.t('syncSuccess') || 'Synced', 'ok');
         }
       }
-      if (area === 'local' && changes[StorageKeys.PROMPT_TAGS]) {
-        const next = changes[StorageKeys.PROMPT_TAGS].newValue;
+      if (area === 'local' && changes[StorageKeys.PROMPT_GROUPS]) {
+        const next = changes[StorageKeys.PROMPT_GROUPS].newValue;
         if (Array.isArray(next)) {
-          tagRegistry = next as PromptTag[];
-          renderTags();
+          groups = next as PromptGroup[];
+          populateGroupSelect(null);
           renderActiveList();
         }
       }
@@ -2088,7 +1798,7 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       // to overlook) would leak into the new prompt.
       (addForm.querySelector('.gv-pm-input-name') as HTMLInputElement).value = '';
       (addForm.querySelector('.gv-pm-input-text') as HTMLTextAreaElement).value = '';
-      (addForm.querySelector('.gv-pm-input-tags') as HTMLInputElement).value = '';
+      populateGroupSelect(null);
       setInlineHint('');
       addForm.classList.remove('gv-hidden');
       (addForm.querySelector('.gv-pm-input-text') as HTMLTextAreaElement)?.focus();
@@ -2150,35 +1860,9 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       const nameRaw = (addForm.querySelector('.gv-pm-input-name') as HTMLInputElement).value;
       const name = nameRaw.trim();
       const text = (addForm.querySelector('.gv-pm-input-text') as HTMLTextAreaElement).value;
-      const tagsRaw = (addForm.querySelector('.gv-pm-input-tags') as HTMLInputElement).value;
-      const tags = dedupeTags((tagsRaw || '').split(',').map((s) => s.trim()));
+      const groupSel = addForm.querySelector('.gv-pm-input-group') as HTMLSelectElement;
+      const groupId = groupSel?.value ? groupSel.value : null;
       if (!text.trim()) return;
-
-      const newTagNames = tags.filter((t) => !findTagByNormalized(tagRegistry, t));
-      if (newTagNames.length > 0) {
-        const created = await showTagSetupDialog(newTagNames, {
-          title: i18n.t('pm_tag_setup_title') || 'Set up new tags',
-          confirm: i18n.t('pm_save') || 'Save',
-          cancel: i18n.t('pm_cancel') || 'Cancel',
-          colorSection: i18n.t('pm_tag_color_section') || 'Color',
-          iconSection: i18n.t('pm_tag_icon_section') || 'Icon',
-        }, (key) => i18n.t(key as TranslationKey) || key);
-        if (!created) return;
-        const known = new Set(tagRegistry.map((t) => t.normalized));
-        for (const tag of created) {
-          if (!known.has(tag.normalized)) {
-            tagRegistry.push(tag);
-            known.add(tag.normalized);
-          }
-        }
-        await writePromptTags(tagRegistry);
-      } else {
-        const ensured = ensureTagsForNewNames(tagRegistry, tags);
-        if (ensured.changed) {
-          tagRegistry = ensured.registry;
-          await writePromptTags(tagRegistry);
-        }
-      }
 
       if (editingId) {
         const dup = items.some(
@@ -2191,7 +1875,7 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         const target = items.find((x) => x.id === editingId);
         if (target) {
           target.text = text;
-          target.tags = tags;
+          target.groupId = groupId;
           if (name) target.name = name;
           else delete target.name;
           target.updatedAt = Date.now();
@@ -2200,23 +1884,21 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         }
         editingId = null;
       } else {
-        // prevent duplicates (case-insensitive, same text)
         const exists = items.some((x) => x.text.trim().toLowerCase() === text.trim().toLowerCase());
         if (exists) {
           setInlineHint(i18n.t('pm_duplicate') || 'Duplicate prompt', 'err');
           return;
         }
-        const it: PromptItem = { id: uid(), text, tags, createdAt: Date.now() };
+        const it: PromptItem = { id: uid(), text, groupId, createdAt: Date.now() };
         if (name) it.name = name;
         items = [it, ...items];
         await writeStorage(STORAGE_KEYS.items, items);
       }
       (addForm.querySelector('.gv-pm-input-name') as HTMLInputElement).value = '';
       (addForm.querySelector('.gv-pm-input-text') as HTMLTextAreaElement).value = '';
-      (addForm.querySelector('.gv-pm-input-tags') as HTMLInputElement).value = '';
+      populateGroupSelect(null);
       setInlineHint('');
       addForm.classList.add('gv-hidden');
-      renderTags();
       renderList();
     });
 
@@ -2230,41 +1912,38 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       switchPanelView(panelView === 'starred' ? 'prompts' : 'starred');
     });
 
-    tagManagerBtn.addEventListener('click', () => {
-      showTagManagerDialog(tagRegistry, {
+    groupManagerBtn.addEventListener('click', () => {
+      showGroupManagerDialog(groups, {
         labels: {
-          title: i18n.t('pm_tag_manager') || 'Tag manager',
-          newTag: i18n.t('pm_tag_new') || 'New tag',
-          save: i18n.t('pm_save') || 'Save',
-          cancel: i18n.t('pm_cancel') || 'Cancel',
+          title: i18n.t('pm_group_manager') || 'Manage groups',
+          newGroup: i18n.t('pm_group_new') || 'New group',
           delete: i18n.t('pm_delete') || 'Delete',
           deleteConfirm: (name) =>
-            (i18n.t('pm_tag_delete_confirm') || 'Delete tag "{name}"?').replace('{name}', name),
-          renamePlaceholder: i18n.t('pm_tag_name_placeholder') || 'Tag name',
-          colorSection: i18n.t('pm_tag_color_section') || 'Color',
+            (i18n.t('pm_group_delete_confirm') || 'Delete group "{name}"? Prompts will move to Ungrouped.').replace(
+              '{name}',
+              name,
+            ),
+          renamePlaceholder: i18n.t('pm_group_name_placeholder') || 'Group name',
+          moveUp: i18n.t('pm_group_move_up') || 'Move up',
+          moveDown: i18n.t('pm_group_move_down') || 'Move down',
           iconSection: i18n.t('pm_tag_icon_section') || 'Icon',
+          close: i18n.t('pm_cancel') || 'Close',
         },
-        translate: (key) => i18n.t(key as TranslationKey) || key,
-        onTagsChanged: (next) => {
-          tagRegistry = next;
-          // #region agent log
-          fetch('http://127.0.0.1:7723/ingest/d1e77644-14e4-4f23-9749-78488f439345',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'05d5a1'},body:JSON.stringify({sessionId:'05d5a1',location:'prompt/index.ts:onTagsChanged',message:'panel tag registry updated',data:{count:next.length,colors:next.map((t)=>({n:t.normalized,c:t.colorId}))},timestamp:Date.now(),hypothesisId:'H3-color,H5-color'})}).catch(()=>{});
-          // #endregion
-          renderTags();
+        translateIconLabel: (key) => i18n.t(key as TranslationKey) || key,
+        onGroupsChanged: (next) => {
+          groups = next;
+          populateGroupSelect(null);
           renderList();
         },
-        onPromptsTagRemoved: async (normalized) => {
-          items = removeTagFromPrompts(items, normalized);
-          await writeStorage(STORAGE_KEYS.items, items);
-        },
-        onPromptsTagRenamed: async (oldNormalized, newNormalized) => {
-          items = syncTagNamesOnPrompts(items, oldNormalized, newNormalized);
+        onGroupDeleted: async (groupId) => {
+          items = clearPromptsFromGroup(items, groupId) as PromptItem[];
           await writeStorage(STORAGE_KEYS.items, items);
         },
       });
     });
 
     // Initialize
+    populateGroupSelect(null);
     refreshUITexts();
 
     // Return destroy function
@@ -2278,7 +1957,6 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
           window.removeEventListener('pointermove', onDragMove);
           window.removeEventListener('pointerup', endDrag);
           window.removeEventListener('pointerup', onTriggerDragEnd);
-          tagsWrap.removeEventListener('scroll', syncTagScrollHint);
 
           try {
             browser.storage?.onChanged?.removeListener(storageChangeHandler);
@@ -2304,10 +1982,9 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
           trigger.remove();
           panel.remove();
-          closeTagManagerDialog();
+          closeGroupManagerDialog();
           document.querySelectorAll('.gv-pm-confirm').forEach((el) => el.remove());
           document.querySelectorAll('.gv-pm-variable-dialog').forEach((el) => el.remove());
-          document.querySelectorAll('.gv-pm-tag-quick-edit').forEach((el) => el.remove());
         } catch (e) {
           console.error('[PromptManager] Destroy error:', e);
         }

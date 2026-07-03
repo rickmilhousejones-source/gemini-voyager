@@ -68,7 +68,7 @@
     "description": "Add prompt button"
   },
   "pm_search_placeholder": {
-    "message": "Search prompts or tags",
+    "message": "Search prompts or groups",
     "description": "Search placeholder"
   },
   "popupSettingsSearchPlaceholder": {
@@ -2334,5 +2334,37 @@
   "themeColorReset": {
     "message": "Reset to default",
     "description": "Reset accent colour to default"
+  },
+  "pm_group_ungrouped": {
+    "message": "Ungrouped",
+    "description": "pm_group_ungrouped"
+  },
+  "pm_group_manager": {
+    "message": "Manage groups",
+    "description": "pm_group_manager"
+  },
+  "pm_group_new": {
+    "message": "New group",
+    "description": "pm_group_new"
+  },
+  "pm_group_name_placeholder": {
+    "message": "Group name",
+    "description": "pm_group_name_placeholder"
+  },
+  "pm_group_delete_confirm": {
+    "message": "Delete group \"{name}\"? Prompts will move to Ungrouped.",
+    "description": "pm_group_delete_confirm"
+  },
+  "pm_group_field": {
+    "message": "Group",
+    "description": "pm_group_field"
+  },
+  "pm_group_move_up": {
+    "message": "Move up",
+    "description": "pm_group_move_up"
+  },
+  "pm_group_move_down": {
+    "message": "Move down",
+    "description": "pm_group_move_down"
   }
 }

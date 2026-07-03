@@ -1,94 +1,75 @@
-import { renderFilterTagButton, renderTagChip } from '../prompt/tagChip';
-import type { PromptTag } from '../prompt/tagTypes';
-import { findTagByNormalized } from '../prompt/tagMigration';
+import { buildGroupSections, findGroupById, previewText } from '../prompt/groupMigration';
+import { extractPlainTitle } from '../prompt/compactTitle';
+import {
+  createGroupIconElement,
+  resolveGroupIconId,
+  UNGROUPED_GROUP_ICON_ID,
+} from '../prompt/groupIcons';
+import type { PromptGroup } from '../prompt/groupTypes';
 
 export interface SlashPromptItem {
   id: string;
   text: string;
   name?: string;
-  tags: string[];
+  groupId: string | null;
 }
 
 export interface SlashPickerLabels {
   empty: string;
-  allTags: string;
+  ungrouped: string;
 }
 
 export interface SlashPickerCallbacks {
   onSelect: (item: SlashPromptItem) => void;
   onClose: () => void;
-  onTagFilter: (normalized: string | null) => void;
 }
 
 let pickerEl: HTMLElement | null = null;
 let highlightIndex = 0;
 let filteredItems: SlashPromptItem[] = [];
+/** True after ArrowUp/Down; avoids highlighting the first row on open. */
+let keyboardHighlightVisible = false;
+
+/** Only truncate slash item titles longer than this. */
+const SLASH_ITEM_TITLE_TRUNCATE_LEN = 32;
 
 export function closeSlashPicker(): void {
   pickerEl?.remove();
   pickerEl = null;
   highlightIndex = 0;
   filteredItems = [];
+  keyboardHighlightVisible = false;
 }
 
 export function isSlashPickerOpen(): boolean {
   return pickerEl !== null;
 }
 
+function resolveSectionIconId(section: { groupId: string | null }, groups: PromptGroup[]): string {
+  if (!section.groupId) return UNGROUPED_GROUP_ICON_ID;
+  const group = findGroupById(groups, section.groupId);
+  return resolveGroupIconId(group);
+}
+
 export function renderSlashPicker(
   anchor: HTMLElement,
   items: SlashPromptItem[],
-  tagRegistry: PromptTag[],
+  groups: PromptGroup[],
   query: string,
-  selectedTag: string | null,
   labels: SlashPickerLabels,
   callbacks: SlashPickerCallbacks,
 ): void {
   closeSlashPicker();
 
-  const q = query.toLowerCase();
-  filteredItems = items.filter((it) => {
-    if (selectedTag && !(it.tags || []).includes(selectedTag)) return false;
-    if (!q) return true;
-    const title = (it.name || it.text).toLowerCase();
-    return (
-      title.includes(q) ||
-      it.text.toLowerCase().includes(q) ||
-      (it.tags || []).some((t) => t.includes(q))
-    );
-  });
-
+  const ungroupedLabel = labels.ungrouped || 'Ungrouped';
+  const sections = buildGroupSections(items, groups, query, ungroupedLabel);
+  filteredItems = sections.flatMap((s) => s.items as SlashPromptItem[]);
   highlightIndex = 0;
+  keyboardHighlightVisible = false;
 
   const pop = document.createElement('div');
   pop.className = 'gv-slash-picker';
   pop.setAttribute('role', 'listbox');
-
-  const tagsRow = document.createElement('div');
-  tagsRow.className = 'gv-pm-tags gv-slash-picker-tags';
-
-  const allBtn = document.createElement('button');
-  allBtn.type = 'button';
-  allBtn.className = 'gv-pm-tag';
-  allBtn.textContent = labels.allTags;
-  if (!selectedTag) allBtn.classList.add('active');
-  allBtn.addEventListener('click', () => callbacks.onTagFilter(null));
-  tagsRow.appendChild(allBtn);
-
-  const tagNames = Array.from(
-    new Set(items.flatMap((it) => it.tags || []).map((t) => t.toLowerCase())),
-  ).sort();
-  for (const n of tagNames) {
-    const entity = findTagByNormalized(tagRegistry, n);
-    if (entity) {
-      tagsRow.appendChild(
-        renderFilterTagButton(entity, tagRegistry, selectedTag === n, (norm) =>
-          callbacks.onTagFilter(selectedTag === norm ? null : norm),
-        ),
-      );
-    }
-  }
-  pop.appendChild(tagsRow);
 
   const list = document.createElement('div');
   list.className = 'gv-pm-list gv-slash-picker-list';
@@ -99,30 +80,53 @@ export function renderSlashPicker(
     empty.textContent = labels.empty;
     list.appendChild(empty);
   } else {
-    filteredItems.forEach((it, idx) => {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = 'gv-pm-item gv-slash-picker-item';
-      row.setAttribute('role', 'option');
-      if (idx === highlightIndex) row.classList.add('active');
+    let itemIndex = 0;
+    sections.forEach((section, sectionIdx) => {
+      const sectionEl = document.createElement('div');
+      sectionEl.className = 'gv-slash-picker-section';
+      if (sectionIdx > 0) sectionEl.classList.add('gv-slash-picker-section-divider');
 
-      const title = document.createElement('div');
-      title.className = 'gv-slash-picker-title';
-      title.textContent = (it.name && it.name.trim()) || it.text.slice(0, 60);
-      row.appendChild(title);
+      const sectionIconId = resolveSectionIconId(section, groups);
 
-      if (it.tags?.length) {
-        const meta = document.createElement('div');
-        meta.className = 'gv-slash-picker-meta';
-        for (const t of it.tags.slice(0, 2)) {
-          const entity = findTagByNormalized(tagRegistry, t);
-          if (entity) meta.appendChild(renderTagChip(entity, tagRegistry, { variant: 'meta' }));
+      const groupHeader = document.createElement('div');
+      groupHeader.className = 'gv-slash-picker-group';
+      const groupName = document.createElement('span');
+      groupName.className = 'gv-slash-picker-group-name';
+      groupName.textContent = section.name;
+      groupHeader.appendChild(groupName);
+      sectionEl.appendChild(groupHeader);
+
+      for (const it of section.items) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'gv-pm-item gv-slash-picker-item';
+        row.setAttribute('role', 'option');
+        if (keyboardHighlightVisible && itemIndex === highlightIndex) row.classList.add('active');
+
+        row.appendChild(createGroupIconElement(sectionIconId, 'gv-slash-picker-item-icon', 16));
+
+        const title = document.createElement('span');
+        title.className = 'gv-slash-picker-item-title';
+        const titleText =
+          (it.name && it.name.trim()) || extractPlainTitle(String(it.text ?? ''));
+        title.textContent = titleText;
+        if (titleText.length > SLASH_ITEM_TITLE_TRUNCATE_LEN) {
+          title.classList.add('gv-slash-picker-item-title-long');
         }
-        row.appendChild(meta);
+        row.appendChild(title);
+
+        const desc = document.createElement('span');
+        desc.className = 'gv-slash-picker-item-desc';
+        desc.textContent = previewText(String(it.text ?? ''), 120);
+        row.appendChild(desc);
+
+        const captured = it as SlashPromptItem;
+        row.addEventListener('click', () => callbacks.onSelect(captured));
+        sectionEl.appendChild(row);
+        itemIndex += 1;
       }
 
-      row.addEventListener('click', () => callbacks.onSelect(it));
-      list.appendChild(row);
+      list.appendChild(sectionEl);
     });
   }
 
@@ -155,9 +159,9 @@ function positionSlashPicker(anchor: HTMLElement, pop: HTMLElement): void {
   }
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const pw = Math.min(360, vw - 16);
+  const pw = Math.min(440, vw - 16);
   pop.style.width = `${pw}px`;
-  const ph = pop.offsetHeight || 240;
+  const ph = pop.offsetHeight || 280;
   let top = r.top - ph - 8;
   if (top < 8) top = r.bottom + 8;
   if (top + ph > vh - 8) top = Math.max(8, vh - ph - 8);
@@ -170,6 +174,7 @@ function positionSlashPicker(anchor: HTMLElement, pop: HTMLElement): void {
 
 export function moveSlashPickerHighlight(delta: number): void {
   if (!pickerEl || filteredItems.length === 0) return;
+  keyboardHighlightVisible = true;
   highlightIndex = (highlightIndex + delta + filteredItems.length) % filteredItems.length;
   const rows = pickerEl.querySelectorAll('.gv-slash-picker-item');
   rows.forEach((row, i) => row.classList.toggle('active', i === highlightIndex));

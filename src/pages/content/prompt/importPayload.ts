@@ -1,11 +1,6 @@
 export interface ImportedPromptDraft {
   text: string;
-  tags: string[];
-  /**
-   * Optional user-authored label. Preserved through import so round-tripping
-   * an exported JSON doesn't silently drop the compact-mode headline users
-   * set in the add/edit form.
-   */
+  groupId: string | null;
   name?: string;
 }
 
@@ -14,21 +9,10 @@ export type PromptImportParseResult =
   | { status: 'empty' }
   | { status: 'ok'; items: ImportedPromptDraft[] };
 
-const PROMPT_EXPORT_FORMAT = 'gemini-voyager.prompts.v1';
-
-function dedupeImportedTags(tags: string[]): string[] {
-  const seen = new Set<string>();
-  const output: string[] = [];
-
-  for (const rawTag of tags) {
-    const normalizedTag = rawTag.trim().toLowerCase();
-    if (!normalizedTag || seen.has(normalizedTag)) continue;
-    seen.add(normalizedTag);
-    output.push(normalizedTag);
-  }
-
-  return output;
-}
+const PROMPT_EXPORT_FORMATS = new Set([
+  'gemini-voyager.prompts.v1',
+  'gemini-voyager.prompts.v2',
+]);
 
 export function parsePromptImportPayload(payload: unknown): PromptImportParseResult {
   let sourceItems: unknown[] | null = null;
@@ -37,7 +21,13 @@ export function parsePromptImportPayload(payload: unknown): PromptImportParseRes
     sourceItems = payload;
   } else if (payload && typeof payload === 'object') {
     const candidate = payload as Record<string, unknown>;
-    if (candidate.format !== PROMPT_EXPORT_FORMAT && !Array.isArray(candidate.items)) {
+    const format = candidate.format;
+    if (
+      format !== undefined &&
+      typeof format === 'string' &&
+      !PROMPT_EXPORT_FORMATS.has(format) &&
+      !Array.isArray(candidate.items)
+    ) {
       return { status: 'invalid' };
     }
     sourceItems = Array.isArray(candidate.items) ? candidate.items : [];
@@ -57,16 +47,17 @@ export function parsePromptImportPayload(payload: unknown): PromptImportParseRes
     const text = String(candidate?.text ?? '').trim();
     if (!text) continue;
 
-    const tags = Array.isArray(candidate?.tags)
-      ? candidate.tags.map((tag: unknown) => String(tag))
-      : [];
-    const normalizedTags = dedupeImportedTags(tags);
-    const dedupeKey = `${text.toLowerCase()}|${[...normalizedTags].sort().join(',')}`;
+    const rawGroupId = candidate?.groupId;
+    const groupId =
+      rawGroupId === undefined || rawGroupId === null || rawGroupId === ''
+        ? null
+        : String(rawGroupId);
+    const dedupeKey = `${text.toLowerCase()}|${groupId ?? ''}`;
 
     if (seenKeys.has(dedupeKey)) continue;
     seenKeys.add(dedupeKey);
     const rawName = typeof candidate?.name === 'string' ? candidate.name.trim() : '';
-    const draft: ImportedPromptDraft = { text, tags: normalizedTags };
+    const draft: ImportedPromptDraft = { text, groupId };
     if (rawName) draft.name = rawName;
     validItems.push(draft);
   }

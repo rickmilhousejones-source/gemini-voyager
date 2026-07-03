@@ -68,7 +68,7 @@
     "description": "Add prompt button"
   },
   "pm_search_placeholder": {
-    "message": "البحث في المطالبات أو العلامات",
+    "message": "البحث في المطالبات أو المجموعات",
     "description": "Search placeholder"
   },
   "popupSettingsSearchPlaceholder": {
@@ -2334,5 +2334,37 @@
   "themeColorReset": {
     "message": "إعادة التعيين إلى الافتراضي",
     "description": "Reset accent colour to default"
+  },
+  "pm_group_ungrouped": {
+    "message": "غير مجمّع",
+    "description": "pm_group_ungrouped"
+  },
+  "pm_group_manager": {
+    "message": "إدارة المجموعات",
+    "description": "pm_group_manager"
+  },
+  "pm_group_new": {
+    "message": "مجموعة جديدة",
+    "description": "pm_group_new"
+  },
+  "pm_group_name_placeholder": {
+    "message": "اسم المجموعة",
+    "description": "pm_group_name_placeholder"
+  },
+  "pm_group_delete_confirm": {
+    "message": "حذف المجموعة «{name}»؟ ستنتقل المطالبات إلى غير مجمّع.",
+    "description": "pm_group_delete_confirm"
+  },
+  "pm_group_field": {
+    "message": "المجموعة",
+    "description": "pm_group_field"
+  },
+  "pm_group_move_up": {
+    "message": "أعلى",
+    "description": "pm_group_move_up"
+  },
+  "pm_group_move_down": {
+    "message": "أسفل",
+    "description": "pm_group_move_down"
   }
 }

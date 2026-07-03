@@ -7,13 +7,16 @@ import { AppError, ErrorCode } from '@/core/errors/AppError';
 import type { Result } from '@/core/types/common';
 import { StorageKeys } from '@/core/types/common';
 import { EXTENSION_VERSION } from '@/core/utils/version';
-import { mergePromptTags } from '@/utils/merge';
+import { mergePromptGroups } from '@/utils/merge';
+import { migrateItemsToGroups } from '@/pages/content/prompt/groupMigration';
 
 import type { PromptExportPayload, PromptItem } from '../types/backup';
+import type { PromptGroup } from '@/core/types/sync';
 
-const EXPORT_FORMAT = 'gemini-voyager.prompts.v1' as const;
+const EXPORT_FORMAT = 'gemini-voyager.prompts.v2' as const;
+const LEGACY_EXPORT_FORMAT = 'gemini-voyager.prompts.v1' as const;
 const STORAGE_KEY = 'gvPromptItems';
-const TAG_STORAGE_KEY = StorageKeys.PROMPT_TAGS;
+const GROUP_STORAGE_KEY = StorageKeys.PROMPT_GROUPS;
 
 /**
  * Service for handling prompt import/export operations
@@ -23,13 +26,16 @@ export class PromptImportExportService {
    * Export prompt data to a JSON payload
    * Uses centralized version management to ensure consistency
    */
-  static exportToPayload(items: PromptItem[], tagRegistry?: import('@/core/types/sync').PromptTag[]): PromptExportPayload {
+  static exportToPayload(
+    items: PromptItem[],
+    groupRegistry?: PromptGroup[],
+  ): PromptExportPayload {
     return {
       format: EXPORT_FORMAT,
       exportedAt: new Date().toISOString(),
       version: EXTENSION_VERSION,
       items,
-      ...(tagRegistry && tagRegistry.length > 0 ? { tagRegistry } : {}),
+      ...(groupRegistry && groupRegistry.length > 0 ? { groupRegistry } : {}),
     };
   }
 
@@ -50,12 +56,12 @@ export class PromptImportExportService {
     const p = payload as Record<string, unknown>;
 
     // Check format version
-    if (p.format !== EXPORT_FORMAT) {
+    if (p.format !== EXPORT_FORMAT && p.format !== LEGACY_EXPORT_FORMAT) {
       return {
         success: false,
         error: new AppError(
           ErrorCode.VALIDATION_ERROR,
-          `Unsupported format: expected "${EXPORT_FORMAT}", got "${p.format}"`,
+          `Unsupported format: expected "${EXPORT_FORMAT}" or "${LEGACY_EXPORT_FORMAT}", got "${String(p.format)}"`,
           { format: p.format },
         ),
       };
@@ -89,17 +95,6 @@ export class PromptImportExportService {
           error: new AppError(
             ErrorCode.VALIDATION_ERROR,
             'Prompt item missing valid "text" field',
-            { item },
-          ),
-        };
-      }
-
-      if (!Array.isArray(i.tags)) {
-        return {
-          success: false,
-          error: new AppError(
-            ErrorCode.VALIDATION_ERROR,
-            'Prompt item missing valid "tags" field',
             { item },
           ),
         };
@@ -167,38 +162,38 @@ export class PromptImportExportService {
     }
   }
 
-  static async loadPromptTags(): Promise<Result<import('@/core/types/sync').PromptTag[]>> {
+  static async loadPromptGroups(): Promise<Result<PromptGroup[]>> {
     try {
-      const raw = localStorage.getItem(TAG_STORAGE_KEY);
+      const raw = localStorage.getItem(GROUP_STORAGE_KEY);
       if (raw === null) {
         return { success: true, data: [] };
       }
-      const tags = JSON.parse(raw) as import('@/core/types/sync').PromptTag[];
-      return { success: true, data: Array.isArray(tags) ? tags : [] };
+      const groups = JSON.parse(raw) as PromptGroup[];
+      return { success: true, data: Array.isArray(groups) ? groups : [] };
     } catch (error) {
       return {
         success: false,
         error: new AppError(
           ErrorCode.STORAGE_READ_FAILED,
-          'Failed to load prompt tags from localStorage',
-          { key: TAG_STORAGE_KEY },
+          'Failed to load prompt groups from localStorage',
+          { key: GROUP_STORAGE_KEY },
           error instanceof Error ? error : undefined,
         ),
       };
     }
   }
 
-  static async savePromptTags(tags: import('@/core/types/sync').PromptTag[]): Promise<Result<void>> {
+  static async savePromptGroups(groups: PromptGroup[]): Promise<Result<void>> {
     try {
-      localStorage.setItem(TAG_STORAGE_KEY, JSON.stringify(tags));
+      localStorage.setItem(GROUP_STORAGE_KEY, JSON.stringify(groups));
       return { success: true, data: undefined };
     } catch (error) {
       return {
         success: false,
         error: new AppError(
           ErrorCode.STORAGE_WRITE_FAILED,
-          'Failed to save prompt tags to localStorage',
-          { key: TAG_STORAGE_KEY, tagCount: tags.length },
+          'Failed to save prompt groups to localStorage',
+          { key: GROUP_STORAGE_KEY, groupCount: groups.length },
           error instanceof Error ? error : undefined,
         ),
       };
@@ -229,12 +224,15 @@ export class PromptImportExportService {
       return result;
     }
 
-    const tagResult = await this.loadPromptTags();
-    if (!tagResult.success) {
-      return tagResult;
+    const groupResult = await this.loadPromptGroups();
+    if (!groupResult.success) {
+      return groupResult;
     }
 
-    const payload = this.exportToPayload(result.data, tagResult.data);
+    const payload = this.exportToPayload(
+      migrateItemsToGroups(result.data) as PromptItem[],
+      groupResult.data,
+    );
     return {
       success: true,
       data: JSON.stringify(payload, null, 2),
@@ -262,7 +260,7 @@ export class PromptImportExportService {
       }
 
       const existingItems = loadResult.data;
-      const importItems = payload.items;
+      const importItems = migrateItemsToGroups(payload.items) as PromptItem[];
 
       // Deduplicate and merge
       const existingMap = new Map<string, PromptItem>();
@@ -276,10 +274,9 @@ export class PromptImportExportService {
       for (const item of importItems) {
         const key = item.text.toLowerCase();
         if (existingMap.has(key)) {
-          // Merge tags if duplicate
           const existing = existingMap.get(key)!;
-          const mergedTags = Array.from(new Set([...(existing.tags || []), ...(item.tags || [])]));
-          existing.tags = mergedTags;
+          if (item.groupId) existing.groupId = item.groupId;
+          if (item.name) existing.name = item.name;
           existing.updatedAt = Date.now();
           duplicates++;
         } else {
@@ -301,15 +298,15 @@ export class PromptImportExportService {
         return saveResult;
       }
 
-      if (payload.tagRegistry?.length) {
-        const tagLoadResult = await this.loadPromptTags();
-        if (!tagLoadResult.success) {
-          return tagLoadResult;
+      if (payload.groupRegistry?.length) {
+        const groupLoadResult = await this.loadPromptGroups();
+        if (!groupLoadResult.success) {
+          return groupLoadResult;
         }
-        const mergedTags = mergePromptTags(tagLoadResult.data, payload.tagRegistry);
-        const tagSaveResult = await this.savePromptTags(mergedTags);
-        if (!tagSaveResult.success) {
-          return tagSaveResult;
+        const mergedGroups = mergePromptGroups(groupLoadResult.data, payload.groupRegistry);
+        const groupSaveResult = await this.savePromptGroups(mergedGroups);
+        if (!groupSaveResult.success) {
+          return groupSaveResult;
         }
       }
 

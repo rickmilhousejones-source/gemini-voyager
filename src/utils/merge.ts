@@ -1,4 +1,4 @@
-import type { PromptItem, PromptTag } from '@/core/types/sync';
+import type { PromptGroup, PromptItem } from '@/core/types/sync';
 import type { ForkNode, ForkNodesData } from '@/pages/content/fork/forkTypes';
 import type {
   TimelineHierarchyConversationData,
@@ -270,10 +270,18 @@ export function mergePrompts(local: PromptItem[], cloud: PromptItem[]): PromptIt
 }
 
 /**
- * Merges local and cloud prompt tag registries by id; newer updatedAt wins.
+ * Merges local and cloud prompt group registries by id; newer updatedAt wins.
  */
-export function mergePromptTags(local: PromptTag[], cloud: PromptTag[]): PromptTag[] {
+export function mergePromptGroups(local: PromptGroup[], cloud: PromptGroup[]): PromptGroup[] {
   return mergeItems(local, cloud);
+}
+
+/** @deprecated Use mergePromptGroups */
+export function mergePromptTags(
+  local: PromptGroup[],
+  cloud: PromptGroup[],
+): PromptGroup[] {
+  return mergePromptGroups(local, cloud);
 }
 
 /**

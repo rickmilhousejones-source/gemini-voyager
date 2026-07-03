@@ -13,18 +13,16 @@ This is your personal repository of genius.
 When you write something great, click the **Prompt Manager** icon (floating near the input box).
 It’s now part of your vault.
 
-### 2. Categorize
+### 2. Organize with groups
 
-Add tags like `#coding`, `#email`, or `#research`. Open **Tag manager** from the panel footer to pick a **color and icon** for each tag. Right-click a tag chip in the filter bar for a quick edit.
-
-Keep your tools sharpened and sorted.
+Each prompt belongs to **one group** (or **Ungrouped**). Open **Manage groups** from the panel footer to create, rename, reorder, or delete groups. Deleting a group moves its prompts back to Ungrouped.
 
 ### 3. Deploy
 
 Next time you need it, don't type it again.
 
-- **Slash command (Gemini web)**: At the start of the input (or after a space), type `/` and continue typing to filter. Pick a prompt from the lightweight dropdown.
-- **Prompt panel**: Open the manager, search by tag or keyword, and click to insert.
+- **Slash command (Gemini web)**: At the start of the input (or after a space), type `/` and continue typing to filter. Pick a prompt from the grouped dropdown (section headers + title + summary).
+- **Prompt panel**: Open the manager, search by group or keyword, and click to insert.
 
 Prompts can include <code v-pre>{{variable:default}}</code> placeholders — Voyager asks you to fill them before inserting.
 
@@ -40,7 +38,7 @@ When prompts pile up and the card list no longer fits, the panel adapts:
 
 The `≡ / ▦` button on the right of the search bar switches between **Compact list** (default) and **Comfortable view**.
 
-- **Compact list**: one prompt per row, ~10 visible at once; the right side shows tags · expand · edit · delete
+- **Compact list**: one prompt per row, ~10 visible at once; groups can be collapsed; the right side shows expand · edit · delete
 - **Comfortable view**: full Markdown preview, best for a small collection
 
 ### Optional name label

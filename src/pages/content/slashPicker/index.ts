@@ -6,9 +6,9 @@ import { findChatInput, insertTextIntoChatInput } from '../chatInput/index';
 import { expandInputCollapseIfNeeded } from '../inputCollapse/index';
 import { setCaretPosition } from '../sendBehavior/utils';
 import { resolveAndActivatePrompt } from '../prompt/promptActivation';
-import { migratePromptTags } from '../prompt/tagMigration';
-import { readPromptTags, writePromptTags } from '../prompt/tagChip';
-import type { PromptTag } from '../prompt/tagTypes';
+import { migrateItemsToGroups } from '../prompt/groupMigration';
+import { readPromptGroups } from '../prompt/groupStorage';
+import type { PromptGroup } from '../prompt/groupTypes';
 import {
   closeSlashPicker,
   isSlashPickerOpen,
@@ -31,7 +31,7 @@ type PromptItem = SlashPromptItem & { createdAt?: number };
 
 export interface SlashPickerLabels {
   empty: string;
-  allTags: string;
+  ungrouped: string;
   variableTitle: string;
   variableConfirm: string;
   variableCancel: string;
@@ -41,7 +41,7 @@ export interface SlashPickerLabels {
 
 const DEFAULT_LABELS: SlashPickerLabels = {
   empty: 'No prompts',
-  allTags: 'All',
+  ungrouped: 'Ungrouped',
   variableTitle: 'Fill variables',
   variableConfirm: 'Insert',
   variableCancel: 'Cancel',
@@ -73,32 +73,20 @@ export async function startSlashPicker(options?: {
 }): Promise<{ destroy: () => void }> {
   const labels = { ...DEFAULT_LABELS, ...options?.labels };
   let items: PromptItem[] = [];
-  let tagRegistry: PromptTag[] = [];
-  let selectedTag: string | null = null;
+  let groups: PromptGroup[] = [];
   let currentQuery: ReturnType<typeof detectSlashQuery> = null;
-  let insertOnClick = options?.insertOnClickEnabled ?? true;
+  const insertOnClick = options?.insertOnClickEnabled ?? true;
 
   async function loadData(): Promise<void> {
     const result = await browser.storage.local.get({ [StorageKeys.PROMPT_ITEMS]: [] });
-    items = Array.isArray(result[StorageKeys.PROMPT_ITEMS])
+    const raw = Array.isArray(result[StorageKeys.PROMPT_ITEMS])
       ? (result[StorageKeys.PROMPT_ITEMS] as PromptItem[])
       : [];
-    tagRegistry = await readPromptTags();
-    const migrated = migratePromptTags(items, tagRegistry);
-    if (migrated.changed) {
-      tagRegistry = migrated.tags;
-      await writePromptTags(tagRegistry);
-    }
+    items = migrateItemsToGroups(raw) as PromptItem[];
+    groups = await readPromptGroups();
   }
 
   await loadData();
-
-  try {
-    const sync = await browser.storage.sync.get({ [StorageKeys.PROMPT_INSERT_ON_CLICK]: false });
-    insertOnClick = sync[StorageKeys.PROMPT_INSERT_ON_CLICK] === true;
-  } catch {
-    /* keep default */
-  }
 
   const refreshPicker = () => {
     if (!currentQuery?.active) {
@@ -108,34 +96,23 @@ export async function startSlashPicker(options?: {
     expandInputCollapseIfNeeded();
     const input = findChatInput({ requireVisible: false });
     if (!input) {
-      // #region agent log
-      fetch('http://127.0.0.1:7723/ingest/d1e77644-14e4-4f23-9749-78488f439345',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'05d5a1'},body:JSON.stringify({sessionId:'05d5a1',location:'slashPicker/index.ts:refreshPicker',message:'no input element for picker',data:{query:currentQuery.query},timestamp:Date.now(),hypothesisId:'H-collapsed-input'})}).catch(()=>{});
-      // #endregion
       closeSlashPicker();
       return;
     }
     renderSlashPicker(
       input,
       items,
-      tagRegistry,
+      groups,
       currentQuery.query,
-      selectedTag,
-      { empty: labels.empty, allTags: labels.allTags },
+      { empty: labels.empty, ungrouped: labels.ungrouped },
       {
         onSelect: (it) => void handleSelect(it, input),
         onClose: () => {
           closeSlashPicker();
           currentQuery = null;
         },
-        onTagFilter: (tag) => {
-          selectedTag = tag;
-          refreshPicker();
-        },
       },
     );
-    // #region agent log
-    fetch('http://127.0.0.1:7723/ingest/d1e77644-14e4-4f23-9749-78488f439345',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'05d5a1'},body:JSON.stringify({sessionId:'05d5a1',location:'slashPicker/index.ts:refreshPicker',message:'picker rendered',data:{query:currentQuery.query,itemCount:items.length,inputRectH:input.getBoundingClientRect().height},timestamp:Date.now(),hypothesisId:'H-collapsed-input',runId:'post-fix'})}).catch(()=>{});
-    // #endregion
   };
 
   async function handleSelect(it: SlashPromptItem, input: HTMLElement): Promise<void> {
@@ -145,11 +122,11 @@ export async function startSlashPicker(options?: {
     if (!query) return;
 
     expandInputCollapseIfNeeded();
+    input.focus();
 
-    // Remove /query token first
     replaceSlashToken(input, query.slashStart, query.slashEnd, '');
 
-    const result = await resolveAndActivatePrompt({
+    await resolveAndActivatePrompt({
       text: it.text,
       insertOnClickEnabled: insertOnClick,
       variableLabels: {
@@ -163,24 +140,29 @@ export async function startSlashPicker(options?: {
       expandInputCollapseIfNeeded,
       insertTextIntoChatInput: (text) => insertTextIntoChatInput(text, input),
     });
-
-    if (result === 'inserted' || result === 'copied') {
-      // optional toast could be added
-    }
   }
 
   const applySlashState = (
     input: HTMLElement,
     state: ReturnType<typeof detectSlashQuery>,
-    source: string,
-    extra?: Record<string, unknown>,
   ) => {
-    const fullText = input.textContent?.replace(/\u200b/g, '') ?? '';
-    const rawOffset = getTextOffset(input);
-    // #region agent log
-    fetch('http://127.0.0.1:7723/ingest/d1e77644-14e4-4f23-9749-78488f439345',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'05d5a1'},body:JSON.stringify({sessionId:'05d5a1',location:`slashPicker/index.ts:${source}`,message:'slash detect run',data:{fullText,rawOffset,resolvedOffset:state?.slashEnd??null,stateActive:!!state,query:state?.query??null,...extra},timestamp:Date.now(),hypothesisId:'H-offset-lag,H-collapsed-input'})}).catch(()=>{});
-    // #endregion
     if (!state) {
+      if (currentQuery?.active && Date.now() < slashOpenUntil) {
+        return;
+      }
+      if (currentQuery?.active) {
+        requestAnimationFrame(() => {
+          const retry = detectSlashQuery(input);
+          if (retry?.active) {
+            currentQuery = retry;
+            refreshPicker();
+            return;
+          }
+          closeSlashPicker();
+          currentQuery = null;
+        });
+        return;
+      }
       closeSlashPicker();
       currentQuery = null;
       return;
@@ -189,12 +171,14 @@ export async function startSlashPicker(options?: {
     refreshPicker();
   };
 
-  const runSlashDetect = (input: HTMLElement, source: string, extra?: Record<string, unknown>) => {
-    applySlashState(input, detectSlashQuery(input), source, extra);
+  const runSlashDetect = (input: HTMLElement) => {
+    applySlashState(input, detectSlashQuery(input));
   };
 
   let observedInput: HTMLElement | null = null;
   let inputObserver: MutationObserver | null = null;
+  let mutationDetectRaf = 0;
+  let slashOpenUntil = 0;
 
   const ensureInputObserver = () => {
     const input = findChatInput({ requireVisible: false });
@@ -203,7 +187,10 @@ export async function startSlashPicker(options?: {
     observedInput = input;
     inputObserver = new MutationObserver(() => {
       if (!shouldAllowSlashInVim(input)) return;
-      runSlashDetect(input, 'mutationObserver');
+      cancelAnimationFrame(mutationDetectRaf);
+      mutationDetectRaf = requestAnimationFrame(() => {
+        runSlashDetect(input);
+      });
     });
     inputObserver.observe(input, { childList: true, subtree: true, characterData: true });
   };
@@ -216,9 +203,8 @@ export async function startSlashPicker(options?: {
     if (!input || (target !== input && !input.contains(target))) return;
     if (!shouldAllowSlashInVim(input)) return;
 
-    const pending = ev.data;
     requestAnimationFrame(() => {
-      runSlashDetect(input, 'onBeforeInput', { pending, inputType: ev.inputType });
+      runSlashDetect(input);
     });
   };
 
@@ -240,11 +226,7 @@ export async function startSlashPicker(options?: {
       return;
     }
 
-    runSlashDetect(input, 'onInput', {
-      eventType: ev.type,
-      inputType: ev.inputType,
-      isTrusted: ev.isTrusted,
-    });
+    runSlashDetect(input);
   };
 
   const onKeyDownSlash = (ev: KeyboardEvent) => {
@@ -256,16 +238,14 @@ export async function startSlashPicker(options?: {
 
     const isSlashKey = ev.code === 'Slash' || ev.key === '/' || ev.key === '／';
     if (isSlashKey && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
-      applySlashState(input, detectSlashQueryWithInsert(input, '/'), 'keydownSlash', {
-        code: ev.code,
-        key: ev.key,
-      });
+      slashOpenUntil = Date.now() + 400;
+      applySlashState(input, detectSlashQueryWithInsert(input, '/'));
     }
 
     if (ev.key === 'Backspace' || ev.key === 'Delete') {
       requestAnimationFrame(() => {
         if (!shouldAllowSlashInVim(input)) return;
-        runSlashDetect(input, 'scheduleDetect', { key: ev.key });
+        runSlashDetect(input);
       });
     }
   };
@@ -308,7 +288,7 @@ export async function startSlashPicker(options?: {
     area: string,
   ) => {
     if (area !== 'local') return;
-    if (changes[StorageKeys.PROMPT_ITEMS] || changes[StorageKeys.PROMPT_TAGS]) {
+    if (changes[StorageKeys.PROMPT_ITEMS] || changes[StorageKeys.PROMPT_GROUPS]) {
       void loadData().then(() => {
         if (currentQuery?.active) refreshPicker();
       });
@@ -334,6 +314,8 @@ export async function startSlashPicker(options?: {
       inputObserver?.disconnect();
       inputObserver = null;
       observedInput = null;
+      cancelAnimationFrame(mutationDetectRaf);
+      mutationDetectRaf = 0;
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', onScroll, true);

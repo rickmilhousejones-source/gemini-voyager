@@ -190,24 +190,24 @@ export class GoogleDriveSyncService {
         data: folders,
       };
 
-      // Create prompt payload (include tag registry when available)
-      let tagRegistry: PromptExportPayload['tagRegistry'];
+      // Create prompt payload (include group registry when available)
+      let groupRegistry: PromptExportPayload['groupRegistry'];
       try {
-        const tagResult = await chrome.storage.local.get([StorageKeys.PROMPT_TAGS]);
-        const raw = tagResult[StorageKeys.PROMPT_TAGS];
+        const groupResult = await chrome.storage.local.get([StorageKeys.PROMPT_GROUPS]);
+        const raw = groupResult[StorageKeys.PROMPT_GROUPS];
         if (Array.isArray(raw) && raw.length > 0) {
-          tagRegistry = raw as PromptExportPayload['tagRegistry'];
+          groupRegistry = raw as PromptExportPayload['groupRegistry'];
         }
       } catch {
         /* optional */
       }
 
       const promptPayload: PromptExportPayload = {
-        format: 'gemini-voyager.prompts.v1',
+        format: 'gemini-voyager.prompts.v2',
         exportedAt: now.toISOString(),
         version: EXTENSION_VERSION,
         items: prompts,
-        ...(tagRegistry ? { tagRegistry } : {}),
+        ...(groupRegistry ? { groupRegistry } : {}),
       };
 
       const settingsPayload: SettingsExportPayload | null = settings

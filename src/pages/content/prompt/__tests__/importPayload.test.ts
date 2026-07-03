@@ -20,7 +20,7 @@ describe('parsePromptImportPayload', () => {
       }),
     ).toEqual({
       status: 'ok',
-      items: [{ text: 'Use TypeScript', tags: ['code'] }],
+      items: [{ text: 'Use TypeScript', groupId: null }],
     });
   });
 
@@ -35,40 +35,50 @@ describe('parsePromptImportPayload', () => {
 
   it('preserves an optional name field when round-tripping an exported item', () => {
     const result = parsePromptImportPayload({
-      format: 'gemini-voyager.prompts.v1',
-      items: [{ text: 'Translate EN→ZH', tags: ['translate'], name: 'Translator' }],
+      format: 'gemini-voyager.prompts.v2',
+      items: [{ text: 'Translate EN→ZH', groupId: 'g1', name: 'Translator' }],
     });
     expect(result).toEqual({
       status: 'ok',
-      items: [{ text: 'Translate EN→ZH', tags: ['translate'], name: 'Translator' }],
+      items: [{ text: 'Translate EN→ZH', groupId: 'g1', name: 'Translator' }],
+    });
+  });
+
+  it('ignores legacy tags and keeps groupId null', () => {
+    const result = parsePromptImportPayload({
+      items: [{ text: 'A', tags: ['foo'], groupId: null }],
+    });
+    expect(result).toEqual({
+      status: 'ok',
+      items: [{ text: 'A', groupId: null }],
     });
   });
 
   it('trims whitespace around an imported name and drops it entirely when empty', () => {
     const result = parsePromptImportPayload({
       items: [
-        { text: 'A', tags: [], name: '  Custom  ' },
-        { text: 'B', tags: [], name: '   ' },
-        { text: 'C', tags: [] },
+        { text: 'A', groupId: null, name: '  Custom  ' },
+        { text: 'B', groupId: null, name: '   ' },
+        { text: 'C', groupId: null },
       ],
     });
     expect(result).toEqual({
       status: 'ok',
       items: [
-        { text: 'A', tags: [], name: 'Custom' },
-        { text: 'B', tags: [] },
-        { text: 'C', tags: [] },
+        { text: 'A', groupId: null, name: 'Custom' },
+        { text: 'B', groupId: null },
+        { text: 'C', groupId: null },
       ],
     });
   });
 
   it('ignores non-string name fields', () => {
     const result = parsePromptImportPayload({
-      items: [{ text: 'A', tags: [], name: 42 }],
+      items: [{ text: 'A', groupId: null, name: 42 }],
     });
     expect(result).toEqual({
       status: 'ok',
-      items: [{ text: 'A', tags: [] }],
+      items: [{ text: 'A', groupId: null }],
     });
   });
 });

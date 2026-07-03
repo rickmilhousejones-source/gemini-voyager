@@ -9,12 +9,12 @@ import {
 import { DataBackupService } from '@/core/services/DataBackupService';
 import { getStorageMonitor } from '@/core/services/StorageMonitor';
 import { StorageKeys } from '@/core/types/common';
-import type { PromptItem, PromptTag, SyncAccountScope } from '@/core/types/sync';
+import type { PromptGroup, PromptItem, SyncAccountScope } from '@/core/types/sync';
 import { isSafari } from '@/core/utils/browser';
 import { createTranslator, initI18n } from '@/utils/i18n';
 import {
   mergeFolderData as mergeSyncedFolderData,
-  mergePromptTags,
+  mergePromptGroups,
   mergePrompts,
 } from '@/utils/merge';
 
@@ -3647,7 +3647,7 @@ export class AIStudioFolderManager {
             error?: string;
             data?: {
               folders?: { data?: FolderData };
-              prompts?: Pick<import('@/core/types/sync').PromptExportPayload, 'items' | 'tagRegistry'>;
+              prompts?: Pick<import('@/core/types/sync').PromptExportPayload, 'items' | 'groupRegistry'>;
             };
           }
         | undefined;
@@ -3668,7 +3668,7 @@ export class AIStudioFolderManager {
       const cloudPromptsPayload = response.data?.prompts;
       const cloudFolderData = cloudFoldersPayload?.data || { folders: [], folderContents: {} };
       const cloudPromptItems = cloudPromptsPayload?.items || [];
-      const cloudPromptTags = cloudPromptsPayload?.tagRegistry || [];
+      const cloudPromptGroups = cloudPromptsPayload?.groupRegistry || [];
 
       console.log(
         `[AIStudioFolderManager] Downloaded - folders: ${cloudFolderData.folders?.length || 0}, prompts: ${cloudPromptItems.length}`,
@@ -3676,17 +3676,17 @@ export class AIStudioFolderManager {
 
       // Get local prompts for merge (shared with Gemini)
       let localPrompts: PromptItem[] = [];
-      let localPromptTags: PromptTag[] = [];
+      let localPromptGroups: PromptGroup[] = [];
       try {
         const storageResult = await chrome.storage.local.get([
           StorageKeys.PROMPT_ITEMS,
-          StorageKeys.PROMPT_TAGS,
+          StorageKeys.PROMPT_GROUPS,
         ]);
         if (storageResult[StorageKeys.PROMPT_ITEMS]) {
           localPrompts = storageResult[StorageKeys.PROMPT_ITEMS] as PromptItem[];
         }
-        if (Array.isArray(storageResult[StorageKeys.PROMPT_TAGS])) {
-          localPromptTags = storageResult[StorageKeys.PROMPT_TAGS] as PromptTag[];
+        if (Array.isArray(storageResult[StorageKeys.PROMPT_GROUPS])) {
+          localPromptGroups = storageResult[StorageKeys.PROMPT_GROUPS] as PromptGroup[];
         }
       } catch (err) {
         console.warn('[AIStudioFolderManager] Could not get local prompts for merge:', err);
@@ -3698,7 +3698,7 @@ export class AIStudioFolderManager {
 
       // Merge prompts (simple ID-based merge)
       const mergedPrompts = mergePrompts(localPrompts, cloudPromptItems);
-      const mergedPromptTags = mergePromptTags(localPromptTags, cloudPromptTags);
+      const mergedPromptGroups = mergePromptGroups(localPromptGroups, cloudPromptGroups);
 
       console.log(
         `[AIStudioFolderManager] Merged - folders: ${mergedFolders.folders?.length || 0}, prompts: ${mergedPrompts.length}`,
@@ -3712,7 +3712,7 @@ export class AIStudioFolderManager {
       try {
         await chrome.storage.local.set({
           [StorageKeys.PROMPT_ITEMS]: mergedPrompts,
-          [StorageKeys.PROMPT_TAGS]: mergedPromptTags,
+          [StorageKeys.PROMPT_GROUPS]: mergedPromptGroups,
         });
       } catch (err) {
         console.error('[AIStudioFolderManager] Failed to save merged prompts:', err);

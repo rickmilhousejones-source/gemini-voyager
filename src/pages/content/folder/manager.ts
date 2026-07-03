@@ -10,13 +10,13 @@ import {
 import { DataBackupService } from '@/core/services/DataBackupService';
 import { getStorageMonitor } from '@/core/services/StorageMonitor';
 import { StorageKeys } from '@/core/types/common';
-import type { PromptItem, PromptTag, SyncAccountScope } from '@/core/types/sync';
+import type { PromptGroup, PromptItem, SyncAccountScope } from '@/core/types/sync';
 import { isSafari } from '@/core/utils/browser';
 import { isExtensionContextInvalidatedError } from '@/core/utils/extensionContext';
 import { FolderImportExportService } from '@/features/folder/services/FolderImportExportService';
 import type { ImportStrategy } from '@/features/folder/types/import-export';
 import { getTranslationSync, getTranslationSyncUnsafe, initI18n } from '@/utils/i18n';
-import { mergeFolderData, mergePromptTags, mergePrompts, mergeTimelineHierarchy } from '@/utils/merge';
+import { mergeFolderData, mergePromptGroups, mergePrompts, mergeTimelineHierarchy } from '@/utils/merge';
 
 import {
   MENU_PANEL_SELECTOR as CONVERSATION_MENU_PANEL_SELECTOR,
@@ -9903,7 +9903,7 @@ export class FolderManager {
             error?: string;
             data?: {
               folders?: { data?: FolderData };
-              prompts?: Pick<import('@/core/types/sync').PromptExportPayload, 'items' | 'tagRegistry'>;
+              prompts?: Pick<import('@/core/types/sync').PromptExportPayload, 'items' | 'groupRegistry'>;
               starred?: { data?: { messages: Record<string, unknown[]> } };
               timelineHierarchy?: { data?: TimelineHierarchyData };
             };
@@ -9928,7 +9928,7 @@ export class FolderManager {
       const cloudTimelineHierarchyPayload = response.data?.timelineHierarchy;
       const cloudFolderData = cloudFoldersPayload?.data || { folders: [], folderContents: {} };
       const cloudPromptItems = cloudPromptsPayload?.items || [];
-      const cloudPromptTags = cloudPromptsPayload?.tagRegistry || [];
+      const cloudPromptGroups = cloudPromptsPayload?.groupRegistry || [];
       const cloudStarredData = cloudStarredPayload?.data || { messages: {} };
       const cloudTimelineHierarchyData = cloudTimelineHierarchyPayload?.data || {
         conversations: {},
@@ -9940,17 +9940,17 @@ export class FolderManager {
 
       // Get local prompts for merge
       let localPrompts: PromptItem[] = [];
-      let localPromptTags: PromptTag[] = [];
+      let localPromptGroups: PromptGroup[] = [];
       try {
         const storageResult = await chrome.storage.local.get([
           StorageKeys.PROMPT_ITEMS,
-          StorageKeys.PROMPT_TAGS,
+          StorageKeys.PROMPT_GROUPS,
         ]);
         if (storageResult[StorageKeys.PROMPT_ITEMS]) {
           localPrompts = storageResult[StorageKeys.PROMPT_ITEMS] as PromptItem[];
         }
-        if (Array.isArray(storageResult[StorageKeys.PROMPT_TAGS])) {
-          localPromptTags = storageResult[StorageKeys.PROMPT_TAGS] as PromptTag[];
+        if (Array.isArray(storageResult[StorageKeys.PROMPT_GROUPS])) {
+          localPromptGroups = storageResult[StorageKeys.PROMPT_GROUPS] as PromptGroup[];
         }
       } catch (err) {
         console.warn('[FolderManager] Could not get local prompts for merge:', err);
@@ -9994,7 +9994,7 @@ export class FolderManager {
 
       // Merge prompts (simple ID-based merge)
       const mergedPrompts = mergePrompts(localPrompts, cloudPromptItems);
-      const mergedPromptTags = mergePromptTags(localPromptTags, cloudPromptTags);
+      const mergedPromptGroups = mergePromptGroups(localPromptGroups, cloudPromptGroups);
 
       // Merge starred messages
       const mergedStarred = this.mergeStarredMessages(localStarred, cloudStarredData);
@@ -10015,7 +10015,7 @@ export class FolderManager {
       try {
         await chrome.storage.local.set({
           [StorageKeys.PROMPT_ITEMS]: mergedPrompts,
-          [StorageKeys.PROMPT_TAGS]: mergedPromptTags,
+          [StorageKeys.PROMPT_GROUPS]: mergedPromptGroups,
           geminiTimelineStarredMessages: mergedStarred,
           [timelineHierarchyStorageKey]: mergedTimelineHierarchy,
         });

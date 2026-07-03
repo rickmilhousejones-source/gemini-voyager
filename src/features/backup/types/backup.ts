@@ -10,7 +10,7 @@ import type { Result } from '@/core/types/common';
 export interface PromptItem {
   id: string;
   text: string;
-  tags: string[];
+  groupId: string | null;
   createdAt: number;
   updatedAt?: number;
   /**
@@ -25,12 +25,13 @@ export interface PromptItem {
  * Prompt export payload format
  */
 export interface PromptExportPayload {
-  format: 'gemini-voyager.prompts.v1';
+  format: 'gemini-voyager.prompts.v1' | 'gemini-voyager.prompts.v2';
   exportedAt: string;
   version?: string;
   items: PromptItem[];
-  /** Optional tag registry (icon/color metadata). */
-  tagRegistry?: import('@/core/types/sync').PromptTag[];
+  groupRegistry?: import('@/core/types/sync').PromptGroup[];
+  /** @deprecated Legacy tag registry — ignored on import. */
+  tagRegistry?: unknown;
 }
 
 /**

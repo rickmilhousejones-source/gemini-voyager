@@ -68,7 +68,7 @@
     "description": "Add prompt button"
   },
   "pm_search_placeholder": {
-    "message": "프롬프트 또는 태그 검색",
+    "message": "프롬프트 또는 그룹 검색",
     "description": "Search placeholder"
   },
   "popupSettingsSearchPlaceholder": {
@@ -2334,5 +2334,37 @@
   "themeColorReset": {
     "message": "기본값으로 재설정",
     "description": "Reset accent colour to default"
+  },
+  "pm_group_ungrouped": {
+    "message": "미분류",
+    "description": "pm_group_ungrouped"
+  },
+  "pm_group_manager": {
+    "message": "그룹 관리",
+    "description": "pm_group_manager"
+  },
+  "pm_group_new": {
+    "message": "새 그룹",
+    "description": "pm_group_new"
+  },
+  "pm_group_name_placeholder": {
+    "message": "그룹 이름",
+    "description": "pm_group_name_placeholder"
+  },
+  "pm_group_delete_confirm": {
+    "message": "그룹 \"{name}\"을(를) 삭제할까요? 프롬프트는 미분류로 이동합니다.",
+    "description": "pm_group_delete_confirm"
+  },
+  "pm_group_field": {
+    "message": "그룹",
+    "description": "pm_group_field"
+  },
+  "pm_group_move_up": {
+    "message": "위로",
+    "description": "pm_group_move_up"
+  },
+  "pm_group_move_down": {
+    "message": "아래로",
+    "description": "pm_group_move_down"
   }
 }

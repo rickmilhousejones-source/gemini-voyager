@@ -87,13 +87,14 @@ export const StorageKeys = {
   PROMPT_INSERT_ON_CLICK: 'gvPromptInsertOnClick',
   PROMPT_VIEW_MODE: 'gvPromptViewMode',
   PROMPT_PANEL_VIEW: 'gvPromptPanelView',
-  // Persisted tag filter for the prompt manager (#729). chrome.storage.local
-  // only — the selected tags are a per-device view over this machine's prompt
-  // set, not a synced preference; syncing them could restore tags a device
-  // hasn't received yet. Shape: string[] of lowercased tag names.
+  // Persisted tag filter for the prompt manager (#729). Deprecated — groups replace tags.
   PROMPT_SELECTED_TAGS: 'gvPromptSelectedTags',
-  /** Tag registry with icon/color metadata. chrome.storage.local */
+  /** @deprecated Tag registry — migrated away; may be removed from storage. */
   PROMPT_TAGS: 'gvPromptTags',
+  /** Prompt group registry. chrome.storage.local */
+  PROMPT_GROUPS: 'gvPromptGroups',
+  /** Manually collapsed group ids (local view state). */
+  PROMPT_COLLAPSED_GROUPS: 'gvPromptCollapsedGroups',
 
   // Global settings
   LANGUAGE: 'language',
