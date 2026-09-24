@@ -95,6 +95,11 @@ export const StorageKeys = {
   PROMPT_GROUPS: 'gvPromptGroups',
   /** Manually collapsed group ids (local view state). */
   PROMPT_COLLAPSED_GROUPS: 'gvPromptCollapsedGroups',
+  /**
+   * Ordered section keys for the prompt list (includes `__ungrouped__` + group ids).
+   * chrome.storage.local
+   */
+  PROMPT_SECTION_ORDER: 'gvPromptSectionOrder',
 
   // Global settings
   LANGUAGE: 'language',

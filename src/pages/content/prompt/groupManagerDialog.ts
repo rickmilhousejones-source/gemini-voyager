@@ -1,6 +1,5 @@
 import {
   createPromptGroup,
-  moveGroup,
   reindexGroupOrders,
   removeGroupFromRegistry,
   renameGroup,
@@ -12,7 +11,7 @@ import {
   PROMPT_GROUP_ICONS,
   resolveGroupIconId,
 } from './groupIcons';
-import { isGroupNameTaken, normalizeGroupName } from './groupTypes';
+import { isGroupNameTaken } from './groupTypes';
 import { writePromptGroups } from './groupStorage';
 import type { PromptGroup } from './groupTypes';
 
@@ -22,8 +21,6 @@ export interface GroupManagerLabels {
   delete: string;
   deleteConfirm: (name: string) => string;
   renamePlaceholder: string;
-  moveUp: string;
-  moveDown: string;
   iconSection: string;
   close: string;
 }
@@ -74,7 +71,7 @@ export function showGroupManagerDialog(registry: PromptGroup[], ctx: GroupManage
   const renderList = () => {
     list.innerHTML = '';
     const sorted = sortGroups(localGroups);
-    sorted.forEach((group, index) => {
+    sorted.forEach((group) => {
       const block = document.createElement('div');
       block.className = 'gv-pm-group-manager-block';
 
@@ -98,36 +95,6 @@ export function showGroupManagerDialog(registry: PromptGroup[], ctx: GroupManage
       nameInput.className = 'gv-pm-group-manager-name';
       nameInput.value = group.name;
       nameInput.placeholder = ctx.labels.renamePlaceholder;
-
-      const moveUp = document.createElement('button');
-      moveUp.type = 'button';
-      moveUp.className = 'gv-pm-group-manager-move';
-      moveUp.textContent = '↑';
-      moveUp.title = ctx.labels.moveUp;
-      moveUp.disabled = index === 0;
-
-      const moveDown = document.createElement('button');
-      moveDown.type = 'button';
-      moveDown.className = 'gv-pm-group-manager-move';
-      moveDown.textContent = '↓';
-      moveDown.title = ctx.labels.moveDown;
-      moveDown.disabled = index === sorted.length - 1;
-
-      moveUp.addEventListener('click', async () => {
-        localGroups = moveGroup(localGroups, group.id, -1);
-        localGroups = reindexGroupOrders(localGroups);
-        await writePromptGroups(localGroups);
-        ctx.onGroupsChanged(localGroups);
-        renderList();
-      });
-
-      moveDown.addEventListener('click', async () => {
-        localGroups = moveGroup(localGroups, group.id, 1);
-        localGroups = reindexGroupOrders(localGroups);
-        await writePromptGroups(localGroups);
-        ctx.onGroupsChanged(localGroups);
-        renderList();
-      });
 
       nameInput.addEventListener('change', async () => {
         const renamed = renameGroup(localGroups, group.id, nameInput.value);
@@ -158,8 +125,6 @@ export function showGroupManagerDialog(registry: PromptGroup[], ctx: GroupManage
 
       const actions = document.createElement('div');
       actions.className = 'gv-pm-group-manager-actions';
-      actions.appendChild(moveUp);
-      actions.appendChild(moveDown);
       actions.appendChild(delBtn);
 
       row.appendChild(iconBtn);

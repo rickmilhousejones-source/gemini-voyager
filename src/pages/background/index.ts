@@ -399,6 +399,35 @@ async function registerFetchInterceptor(): Promise<void> {
   } catch (error) {
     console.error('[Background] Failed to register fetch interceptor:', error);
   }
+
+  // registerContentScripts only applies to future navigations. Re-inject into
+  // already-open Gemini tabs so extension reload picks up interceptor revisions
+  // without requiring a manual hard refresh.
+  await injectFetchInterceptorIntoOpenTabs();
+}
+
+async function injectFetchInterceptorIntoOpenTabs(): Promise<void> {
+  if (!chrome.scripting?.executeScript) return;
+
+  try {
+    const tabs = await chrome.tabs.query({ url: [...GEMINI_FETCH_INTERCEPTOR_MATCHES] });
+    await Promise.all(
+      tabs.map(async (tab) => {
+        if (typeof tab.id !== 'number') return;
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ['fetchInterceptor.js'],
+            world: 'MAIN',
+          });
+        } catch (error) {
+          console.warn('[Background] Failed to inject fetch interceptor into tab', tab.id, error);
+        }
+      }),
+    );
+  } catch (error) {
+    console.warn('[Background] Failed to query tabs for fetch interceptor inject:', error);
+  }
 }
 
 async function unregisterResponseCompleteObserver(): Promise<void> {

@@ -45,8 +45,16 @@ describe('fetchInterceptor (MAIN world script)', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    delete (window as Window & { __gvFetchInterceptorInstalled?: boolean })
-      .__gvFetchInterceptorInstalled;
+    const win = window as Window & {
+      __gvFetchInterceptorInstalled?: boolean;
+      __gvFetchInterceptorRevision?: number;
+      __gvOriginalFetch?: typeof fetch;
+      __gvRewriteDownloadName?: (name: string) => string;
+    };
+    delete win.__gvFetchInterceptorInstalled;
+    delete win.__gvFetchInterceptorRevision;
+    delete win.__gvOriginalFetch;
+    delete win.__gvRewriteDownloadName;
 
     document.documentElement.innerHTML = '';
 
@@ -121,6 +129,71 @@ describe('fetchInterceptor (MAIN world script)', () => {
     );
     expect(bridge.dataset.downloadIntentExpiresAt).toBeUndefined();
     expect(bridge.dataset.status).toContain('"type":"SUCCESS"');
+  });
+
+  it('rewrites jpeg/jfif download headers to png after watermark processing', async () => {
+    originalFetch.mockImplementation(() =>
+      Promise.resolve(
+        createMockFetchResponse('jpeg-bytes', {
+          status: 200,
+          headers: {
+            'Content-Type': 'image/jpeg',
+            'Content-Disposition': 'attachment; filename="Gemini_Generated_Image.jfif"',
+            'Content-Length': '10',
+          },
+        }),
+      ),
+    );
+
+    const bridge = createEnabledBridge();
+    bridge.dataset.downloadIntentExpiresAt = String(Date.now() + 1000);
+    installInterceptor();
+
+    const responsePromise = window.fetch(GEMINI_DOWNLOAD_URL);
+    const requestData = JSON.parse(await waitForBridgeRequest(bridge)) as {
+      requestId: string;
+      base64: string;
+    };
+
+    bridge.dataset.response = JSON.stringify({
+      requestId: requestData.requestId,
+      base64: 'data:image/png;base64,cHJvY2Vzc2Vk',
+    });
+
+    const response = await responsePromise;
+    const body = await response.blob();
+
+    expect(response.headers.get('Content-Type')).toBe('image/png');
+    expect(response.headers.get('Content-Disposition')).toBe(
+      'attachment; filename="Gemini_Generated_Image.png"',
+    );
+    // Original JPEG Content-Length must not be forwarded (would truncate the PNG).
+    expect(response.headers.get('Content-Length')).not.toBe('10');
+    expect(body.type).toBe('image/png');
+  });
+
+  it('rewrites a.download .jfif to .png after a successful watermark process', async () => {
+    const bridge = createEnabledBridge();
+    bridge.dataset.downloadIntentExpiresAt = String(Date.now() + 1000);
+    installInterceptor();
+
+    const responsePromise = window.fetch(GEMINI_DOWNLOAD_URL);
+    const requestData = JSON.parse(await waitForBridgeRequest(bridge)) as {
+      requestId: string;
+      base64: string;
+    };
+    bridge.dataset.response = JSON.stringify({
+      requestId: requestData.requestId,
+      base64: 'data:image/png;base64,cHJvY2Vzc2Vk',
+    });
+    await responsePromise;
+
+    const anchor = document.createElement('a');
+    anchor.download = 'Gemini_Generated_Image_abc.jfif';
+    expect(anchor.download).toBe('Gemini_Generated_Image_abc.png');
+
+    anchor.setAttribute('download', 'other.jfif');
+    expect(anchor.getAttribute('download')).toBe('other.png');
   });
 
   it('uses the watermark pipeline for rd-gg/ URLs (without -dl suffix)', async () => {

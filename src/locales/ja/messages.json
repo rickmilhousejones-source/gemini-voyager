@@ -2366,5 +2366,9 @@
   "pm_group_move_down": {
     "message": "下へ",
     "description": "pm_group_move_down"
+  },
+  "pm_drag_handle": {
+    "message": "ドラッグして並べ替え",
+    "description": "pm_drag_handle"
   }
 }

@@ -16,15 +16,34 @@
   /** Timeout for watermark processing in milliseconds */
   const WATERMARK_PROCESSING_TIMEOUT_MS = 30000;
   const DOWNLOAD_INTENT_ATTRIBUTE = 'data-download-intent-expires-at';
+  /** Bump when interceptor logic changes so re-inject can replace a stale wrapper. */
+  const INTERCEPTOR_REVISION = 2;
+  /** How long after a PNG process we rewrite <a download="*.jfif"> to .png */
+  const PNG_FILENAME_ARM_MS = 60000;
+  const IMAGE_EXT_RE = /\.(jfif|jpe?g|webp|gif)$/i;
 
-  // Prevent double injection
-  if (window.__gvFetchInterceptorInstalled) {
-    console.log('[Gemini Voyager] Fetch interceptor already installed, skipping');
+  if (window.__gvFetchInterceptorRevision === INTERCEPTOR_REVISION) {
+    console.log(
+      '[Gemini Voyager] Fetch interceptor already at revision',
+      INTERCEPTOR_REVISION,
+      '- skipping',
+    );
     return;
   }
+
+  // Unwrap a previous Voyager wrapper so we don't stack fetch hooks on upgrade.
+  if (typeof window.__gvOriginalFetch === 'function') {
+    window.fetch = window.__gvOriginalFetch;
+  }
+
+  window.__gvOriginalFetch = window.fetch.bind(window);
+  window.__gvFetchInterceptorRevision = INTERCEPTOR_REVISION;
   window.__gvFetchInterceptorInstalled = true;
 
-  console.log('[Gemini Voyager] Fetch interceptor loading (MAIN world)...');
+  console.log(
+    '[Gemini Voyager] Fetch interceptor loading (MAIN world, revision',
+    INTERCEPTOR_REVISION + ')...',
+  );
 
   /**
    * Gemini's image download is a multi-step chain on `googleusercontent.com`:
@@ -125,6 +144,123 @@
     return bridge.dataset.enabled === 'true';
   };
 
+  let pngFilenameArmUntil = 0;
+
+  const armPngFilename = () => {
+    pngFilenameArmUntil = Date.now() + PNG_FILENAME_ARM_MS;
+  };
+
+  const toPngFilename = (name) => {
+    const base = String(name || 'Gemini_Generated_Image').replace(/["\r\n]/g, '');
+    if (IMAGE_EXT_RE.test(base)) return base.replace(IMAGE_EXT_RE, '.png');
+    if (/\.png$/i.test(base)) return base;
+    return `${base}.png`;
+  };
+
+  const rewriteDownloadNameIfArmed = (name) => {
+    if (typeof name !== 'string' || !name || Date.now() > pngFilenameArmUntil) return name;
+    return toPngFilename(name);
+  };
+  // Keep the active rewriter on window so prototype patches survive interceptor upgrades.
+  window.__gvRewriteDownloadName = rewriteDownloadNameIfArmed;
+
+  const extractDownloadFilename = (disposition) => {
+    if (!disposition) return null;
+    const star = disposition.match(/filename\*\s*=\s*(?:UTF-8''|utf-8'')([^;\s]+)/i);
+    if (star) {
+      try {
+        return decodeURIComponent(star[1].replace(/["']/g, ''));
+      } catch {
+        // keep going
+      }
+    }
+    const plain =
+      disposition.match(/filename\s*=\s*"([^"]+)"/i) ||
+      disposition.match(/filename\s*=\s*([^;\s]+)/i);
+    return plain ? plain[1].replace(/["']/g, '') : null;
+  };
+
+  /**
+   * Build response headers for the watermark-stripped download.
+   * Processed output is PNG (canvas.toDataURL), but Gemini's original response
+   * still advertises image/jpeg + a .jfif/.jpg filename — Chrome then saves PNG
+   * bytes as .jfif. Align Content-Type / Content-Disposition with the actual
+   * blob so the browser downloads a real .png. Drop Content-Length so the UA
+   * derives it from the new body (keeping the JPEG length would truncate).
+   *
+   * Note: Gemini often ignores these headers and sets <a download="*.jfif"> on a
+   * blob: URL instead — see armPngFilename / download-property patch below.
+   */
+  const buildProcessedDownloadHeaders = (originalHeaders, processedBlob) => {
+    const headers = new Headers();
+    originalHeaders.forEach((value, key) => {
+      const lower = key.toLowerCase();
+      if (lower === 'content-length' || lower === 'content-disposition') return;
+      headers.set(key, value);
+    });
+
+    headers.set('Content-Type', processedBlob.type || 'image/png');
+    const originalName = extractDownloadFilename(originalHeaders.get('Content-Disposition'));
+    headers.set('Content-Disposition', `attachment; filename="${toPngFilename(originalName)}"`);
+
+    return headers;
+  };
+
+  /**
+   * Gemini saves via blob URL + <a download="….jfif">, which overrides Response
+   * Content-Disposition. After a successful PNG process, rewrite that attribute.
+   */
+  const installDownloadNamePatch = () => {
+    const proto = HTMLAnchorElement.prototype;
+    const rewrite = (name) =>
+      typeof window.__gvRewriteDownloadName === 'function'
+        ? window.__gvRewriteDownloadName(name)
+        : name;
+
+    if (!proto.__gvDownloadPatched) {
+      const desc = Object.getOwnPropertyDescriptor(proto, 'download');
+      try {
+        Object.defineProperty(proto, 'download', {
+          configurable: true,
+          enumerable: desc?.enumerable ?? true,
+          get() {
+            if (typeof desc?.get === 'function') return desc.get.call(this);
+            return this.getAttribute('download') || '';
+          },
+          set(value) {
+            const next = rewrite(value);
+            if (typeof desc?.set === 'function') {
+              desc.set.call(this, next);
+              return;
+            }
+            if (next == null || next === '') {
+              this.removeAttribute('download');
+            } else {
+              // Bypass our setAttribute hook to avoid double-rewriting.
+              Element.prototype.setAttribute.call(this, 'download', String(next));
+            }
+          },
+        });
+        proto.__gvDownloadPatched = true;
+      } catch (error) {
+        console.warn('[Gemini Voyager] Failed to patch <a download> property:', error);
+      }
+    }
+
+    if (!proto.__gvSetAttributePatched) {
+      const originalSetAttribute = proto.setAttribute;
+      proto.setAttribute = function (name, value) {
+        if (String(name).toLowerCase() === 'download') {
+          return originalSetAttribute.call(this, name, rewrite(value));
+        }
+        return originalSetAttribute.call(this, name, value);
+      };
+      proto.__gvSetAttributePatched = true;
+    }
+  };
+
+  installDownloadNamePatch();
+
   /**
    * Only user-initiated native download clicks should use the heavier
    * watermark-removal download pipeline. Gemini may fetch rd-gg-dl URLs while
@@ -138,8 +274,8 @@
     return Number.isFinite(expiresAt) && expiresAt >= Date.now();
   };
 
-  // Store original fetch
-  const originalFetch = window.fetch;
+  // Store original fetch (unwrapped page fetch, not a prior Voyager hook)
+  const originalFetch = window.__gvOriginalFetch;
 
   // Intercept fetch
   // IMPORTANT: This must be a regular function (NOT async) to preserve the original Promise
@@ -264,12 +400,14 @@
           });
 
           updateStatus('SUCCESS');
+          // Arm <a download> rewrite: Gemini names blob downloads *.jfif itself.
+          armPngFilename();
 
-          // Return processed response
+          // Return processed response with headers matching the PNG body
           return new Response(processedBlob, {
             status: response.status,
             statusText: response.statusText,
-            headers: response.headers,
+            headers: buildProcessedDownloadHeaders(response.headers, processedBlob),
           });
         } catch (error) {
           console.warn('[Gemini Voyager] Watermark processing failed, using original:', error);

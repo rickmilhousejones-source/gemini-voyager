@@ -2366,5 +2366,9 @@
   "pm_group_move_down": {
     "message": "Move down",
     "description": "pm_group_move_down"
+  },
+  "pm_drag_handle": {
+    "message": "Drag to reorder",
+    "description": "pm_drag_handle"
   }
 }

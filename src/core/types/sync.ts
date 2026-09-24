@@ -59,6 +59,8 @@ export interface PromptItem {
   createdAt: number;
   updatedAt?: number;
   name?: string;
+  /** Sort order within a group (lower first). */
+  order?: number;
 }
 
 export interface PromptGroup {

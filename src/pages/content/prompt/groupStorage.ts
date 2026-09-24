@@ -38,3 +38,22 @@ export async function writeCollapsedGroupIds(ids: Set<string>): Promise<void> {
     [StorageKeys.PROMPT_COLLAPSED_GROUPS]: Array.from(ids),
   });
 }
+
+export async function readPromptSectionOrder(): Promise<string[] | null> {
+  try {
+    const result = await browser.storage.local.get({
+      [StorageKeys.PROMPT_SECTION_ORDER]: null,
+    });
+    const raw = result[StorageKeys.PROMPT_SECTION_ORDER];
+    if (!Array.isArray(raw)) return null;
+    return raw.filter((id): id is string => typeof id === 'string');
+  } catch {
+    return null;
+  }
+}
+
+export async function writePromptSectionOrder(order: string[]): Promise<void> {
+  await browser.storage.local.set({
+    [StorageKeys.PROMPT_SECTION_ORDER]: order,
+  });
+}

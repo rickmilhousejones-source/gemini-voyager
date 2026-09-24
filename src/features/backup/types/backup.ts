@@ -19,6 +19,8 @@ export interface PromptItem {
    * preserve the field on round-trip.
    */
   name?: string;
+  /** Sort order within a group (lower first). */
+  order?: number;
 }
 
 /**

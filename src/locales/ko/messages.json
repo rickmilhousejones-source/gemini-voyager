@@ -2366,5 +2366,9 @@
   "pm_group_move_down": {
     "message": "아래로",
     "description": "pm_group_move_down"
+  },
+  "pm_drag_handle": {
+    "message": "드래그하여 순서 변경",
+    "description": "pm_drag_handle"
   }
 }

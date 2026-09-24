@@ -2366,5 +2366,9 @@
   "pm_group_move_down": {
     "message": "أسفل",
     "description": "pm_group_move_down"
+  },
+  "pm_drag_handle": {
+    "message": "اسحب لإعادة الترتيب",
+    "description": "pm_drag_handle"
   }
 }

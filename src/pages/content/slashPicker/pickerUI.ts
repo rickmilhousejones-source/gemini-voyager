@@ -58,11 +58,14 @@ export function renderSlashPicker(
   query: string,
   labels: SlashPickerLabels,
   callbacks: SlashPickerCallbacks,
+  sectionOrder?: string[] | null,
 ): void {
   closeSlashPicker();
 
   const ungroupedLabel = labels.ungrouped || 'Ungrouped';
-  const sections = buildGroupSections(items, groups, query, ungroupedLabel);
+  const sections = buildGroupSections(items, groups, query, ungroupedLabel, {
+    sectionOrder,
+  });
   filteredItems = sections.flatMap((s) => s.items as SlashPromptItem[]);
   highlightIndex = 0;
   keyboardHighlightVisible = false;

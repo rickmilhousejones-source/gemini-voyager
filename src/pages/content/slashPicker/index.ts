@@ -6,8 +6,8 @@ import { findChatInput, insertTextIntoChatInput } from '../chatInput/index';
 import { expandInputCollapseIfNeeded } from '../inputCollapse/index';
 import { setCaretPosition } from '../sendBehavior/utils';
 import { resolveAndActivatePrompt } from '../prompt/promptActivation';
-import { migrateItemsToGroups } from '../prompt/groupMigration';
-import { readPromptGroups } from '../prompt/groupStorage';
+import { migrateItemsToGroups, normalizeSectionOrder } from '../prompt/groupMigration';
+import { readPromptGroups, readPromptSectionOrder } from '../prompt/groupStorage';
 import type { PromptGroup } from '../prompt/groupTypes';
 import {
   closeSlashPicker,
@@ -27,7 +27,7 @@ import { getTextOffset } from '../sendBehavior/utils';
 
 let skipNextInputDetect = false;
 
-type PromptItem = SlashPromptItem & { createdAt?: number };
+type PromptItem = SlashPromptItem & { createdAt?: number; order?: number };
 
 export interface SlashPickerLabels {
   empty: string;
@@ -74,6 +74,7 @@ export async function startSlashPicker(options?: {
   const labels = { ...DEFAULT_LABELS, ...options?.labels };
   let items: PromptItem[] = [];
   let groups: PromptGroup[] = [];
+  let sectionOrder: string[] = [];
   let currentQuery: ReturnType<typeof detectSlashQuery> = null;
   const insertOnClick = options?.insertOnClickEnabled ?? true;
 
@@ -84,6 +85,7 @@ export async function startSlashPicker(options?: {
       : [];
     items = migrateItemsToGroups(raw) as PromptItem[];
     groups = await readPromptGroups();
+    sectionOrder = normalizeSectionOrder(groups, await readPromptSectionOrder());
   }
 
   await loadData();
@@ -112,6 +114,7 @@ export async function startSlashPicker(options?: {
           currentQuery = null;
         },
       },
+      sectionOrder,
     );
   };
 
@@ -288,7 +291,11 @@ export async function startSlashPicker(options?: {
     area: string,
   ) => {
     if (area !== 'local') return;
-    if (changes[StorageKeys.PROMPT_ITEMS] || changes[StorageKeys.PROMPT_GROUPS]) {
+    if (
+      changes[StorageKeys.PROMPT_ITEMS] ||
+      changes[StorageKeys.PROMPT_GROUPS] ||
+      changes[StorageKeys.PROMPT_SECTION_ORDER]
+    ) {
       void loadData().then(() => {
         if (currentQuery?.active) refreshPicker();
       });

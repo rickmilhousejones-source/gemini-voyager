@@ -39,23 +39,45 @@ import { mountPromptTriggerIcon } from './promptTriggerIcon';
 import { setLockButtonIcon, setThemeToggleIcon } from './panelIcons';
 import { resolveAndActivatePrompt } from './promptActivation';
 import {
+  applyPromptReorder,
   buildGroupSections,
   clearPromptsFromGroup,
+  ensurePromptOrders,
   migrateItemsToGroups,
   findGroupById,
+  nextOrderInGroup,
+  normalizeSectionOrder,
   previewText,
+  reorderSectionOrder,
   runPromptGroupsMigrationIfNeeded,
   sortGroups,
+  syncGroupOrdersFromSectionOrder,
 } from './groupMigration';
 import {
   readCollapsedGroupIds,
   readPromptGroups,
+  readPromptSectionOrder,
   writeCollapsedGroupIds,
   writePromptGroups,
+  writePromptSectionOrder,
 } from './groupStorage';
 import { showGroupManagerDialog, closeGroupManagerDialog } from './groupManagerDialog';
 import { createGroupIconElement, resolveGroupIconId, UNGROUPED_GROUP_ICON_ID } from './groupIcons';
 import type { PromptGroup } from './groupTypes';
+import {
+  bindPromptHandleDrag,
+  bindSectionHandleDrag,
+  clearDropIndicators,
+  createDragHandle,
+  createExpandOnHoverController,
+  isPromptDrag,
+  isSectionDrag,
+  readDragId,
+  resolvePromptDropOnRow,
+  resolvePromptDropOnSection,
+  DND_PROMPT_TYPE,
+  DND_SECTION_TYPE,
+} from './promptDnD';
 
 type PromptItem = {
   id: string;
@@ -64,6 +86,7 @@ type PromptItem = {
   createdAt: number;
   updatedAt?: number;
   name?: string;
+  order?: number;
 };
 
 type PanelPosition = { top: number; left: number };
@@ -666,7 +689,15 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
     let items: PromptItem[] = await readStorage<PromptItem[]>(STORAGE_KEYS.items, []);
     const groupMigrationResult = await runPromptGroupsMigrationIfNeeded(items);
     items = groupMigrationResult.items as PromptItem[];
+    const orderedItems = ensurePromptOrders(items);
+    const ordersWereMissing = items.some((it) => typeof it.order !== 'number');
+    items = orderedItems as PromptItem[];
+    if (ordersWereMissing) {
+      await writeStorage(STORAGE_KEYS.items, items);
+    }
     let groups: PromptGroup[] = await readPromptGroups();
+    let sectionOrder: string[] = normalizeSectionOrder(groups, await readPromptSectionOrder());
+    await writePromptSectionOrder(sectionOrder);
     let collapsedGroupIds: Set<string> = await readCollapsedGroupIds();
     let open = false;
     let locked = !!(await readStorage<boolean>(STORAGE_KEYS.locked, false));
@@ -683,6 +714,16 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
     let starredMessages: StarredMessage[] = [];
     let starredLoading = false;
     let starredLoadError = false;
+    /** While true, empty groups are shown as drop targets. */
+    let listDragging = false;
+    const expandOnHover = createExpandOnHoverController();
+
+    async function persistSectionOrder(next: string[]): Promise<void> {
+      sectionOrder = normalizeSectionOrder(groups, next);
+      groups = syncGroupOrdersFromSectionOrder(groups, sectionOrder);
+      await writePromptSectionOrder(sectionOrder);
+      await writePromptGroups(groups);
+    }
 
     function setNotice(text: string, kind: 'ok' | 'err' = 'ok') {
       notice.textContent = text || '';
@@ -1144,10 +1185,19 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
 
       const q = (searchInput.value || '').trim().toLowerCase();
       const searchActive = q.length > 0;
+      const allowDrag = !searchActive;
       const ungroupedLabel = i18n.t('pm_group_ungrouped') || 'Ungrouped';
-      const sections = buildGroupSections(items, groups, q, ungroupedLabel);
+      const dragLabel = i18n.t('pm_drag_handle') || 'Drag to reorder';
+      // includeEmpty while not searching so empty groups exist in DOM; CSS hides
+      // them until `.gv-pm-dragging-active` (set on dragstart without re-render).
+      const sections = buildGroupSections(items, groups, q, ungroupedLabel, {
+        sectionOrder,
+        includeEmpty: allowDrag,
+      });
+      list.classList.toggle('gv-pm-dragging-active', listDragging);
       list.innerHTML = '';
-      if (sections.length === 0) {
+      const hasAnyPrompt = sections.some((s) => s.items.length > 0);
+      if (!hasAnyPrompt && !listDragging) {
         const empty = createEl('div', 'gv-pm-empty');
         empty.textContent = i18n.t('pm_empty') || 'No prompts yet';
         list.appendChild(empty);
@@ -1155,8 +1205,63 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       }
       const frag = document.createDocumentFragment();
 
-      const appendPromptRow = (parent: HTMLElement, it: PromptItem): void => {
+      const beginListDrag = () => {
+        listDragging = true;
+        list.classList.add('gv-pm-dragging-active');
+      };
+
+      const endListDrag = () => {
+        listDragging = false;
+        expandOnHover.clear();
+        clearDropIndicators(list);
+        list.classList.remove('gv-pm-dragging-active');
+        renderList();
+      };
+
+      const appendPromptRow = (parent: HTMLElement, it: PromptItem, sectionGroupId: string | null): void => {
         const row = createEl('div', 'gv-pm-item');
+        row.dataset.gvPmItemId = it.id;
+        row.dataset.gvPmGroupId = sectionGroupId ?? '';
+
+        if (allowDrag) {
+          row.classList.add('gv-pm-item-draggable');
+          const handle = createDragHandle(dragLabel);
+          bindPromptHandleDrag(handle, it.id, beginListDrag, endListDrag);
+          row.appendChild(handle);
+
+          row.addEventListener('dragover', (e) => {
+            if (!isPromptDrag(e.dataTransfer)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+            clearDropIndicators(list);
+            const rect = row.getBoundingClientRect();
+            const place = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+            row.classList.add(place === 'before' ? 'gv-pm-drop-before' : 'gv-pm-drop-after');
+          });
+
+          row.addEventListener('drop', (e) => {
+            if (!isPromptDrag(e.dataTransfer)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const movedId = readDragId(e.dataTransfer, DND_PROMPT_TYPE);
+            if (!movedId || movedId === it.id) {
+              endListDrag();
+              return;
+            }
+            const target = resolvePromptDropOnRow(row, e.clientY, sectionGroupId, it.id);
+            void (async () => {
+              items = applyPromptReorder(
+                items,
+                movedId,
+                target.targetGroupId,
+                target.beforeItemId,
+              ) as PromptItem[];
+              await writeStorage(STORAGE_KEYS.items, items);
+              endListDrag();
+            })();
+          });
+        }
 
         // Create text container with expand/collapse functionality
         const textContainer = createEl('div', 'gv-pm-item-text-container');
@@ -1382,32 +1487,213 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
       };
 
       for (const section of sections) {
-        const open = isSectionOpen(section.key, searchActive);
-        const header = createEl('button', 'gv-pm-group-header');
-        header.type = 'button';
-        header.classList.toggle('gv-pm-group-header-collapsed', !open);
+        const openSection = isSectionOpen(section.key, searchActive);
+        const header = createEl('div', 'gv-pm-group-header');
+        header.setAttribute('role', 'button');
+        header.tabIndex = 0;
+        header.dataset.gvPmSectionKey = section.key;
+        header.classList.toggle('gv-pm-group-header-collapsed', !openSection);
+        if (section.items.length === 0) {
+          header.classList.add('gv-pm-section-empty');
+        }
+
         const caret = createEl('span', 'gv-pm-group-caret');
-        caret.textContent = open ? '▾' : '▸';
+        caret.textContent = openSection ? '▾' : '▸';
         caret.setAttribute('aria-hidden', 'true');
         const label = createEl('span', 'gv-pm-group-label');
         label.textContent = `${section.name} (${section.items.length})`;
         const sectionIconId = section.groupId
           ? resolveGroupIconId(findGroupById(groups, section.groupId))
           : UNGROUPED_GROUP_ICON_ID;
+
+        if (allowDrag) {
+          header.classList.add('gv-pm-section-draggable');
+          const handle = createDragHandle(dragLabel);
+          bindSectionHandleDrag(handle, section.key, beginListDrag, endListDrag);
+          header.appendChild(handle);
+
+          header.addEventListener('dragover', (e) => {
+            if (isSectionDrag(e.dataTransfer)) {
+              e.preventDefault();
+              e.stopPropagation();
+              if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+              clearDropIndicators(list);
+              const rect = header.getBoundingClientRect();
+              const place = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+              header.classList.add(place === 'before' ? 'gv-pm-drop-before' : 'gv-pm-drop-after');
+              return;
+            }
+            if (isPromptDrag(e.dataTransfer)) {
+              e.preventDefault();
+              e.stopPropagation();
+              if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+              clearDropIndicators(list);
+              header.classList.add('gv-pm-drop-into');
+              if (!openSection) {
+                expandOnHover.onEnterCollapsed(section.key, () => {
+                  if (searchActive) return;
+                  collapsedGroupIds.delete(section.key);
+                  void writeCollapsedGroupIds(collapsedGroupIds);
+                  header.classList.remove('gv-pm-group-header-collapsed');
+                  caret.textContent = '▾';
+                  let itemsWrap = header.nextElementSibling as HTMLElement | null;
+                  if (!itemsWrap?.classList.contains('gv-pm-group-items')) {
+                    itemsWrap = createEl('div', 'gv-pm-group-items');
+                    itemsWrap.dataset.gvPmGroupId = section.groupId ?? '';
+                    if (section.items.length === 0) {
+                      itemsWrap.classList.add('gv-pm-section-empty');
+                    }
+                    itemsWrap.addEventListener('dragover', (ev) => {
+                      if (!isPromptDrag(ev.dataTransfer)) return;
+                      if (section.items.length > 0) return;
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+                      clearDropIndicators(list);
+                      itemsWrap!.classList.add('gv-pm-drop-into');
+                    });
+                    itemsWrap.addEventListener('drop', (ev) => {
+                      if (!isPromptDrag(ev.dataTransfer)) return;
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      const movedId = readDragId(ev.dataTransfer, DND_PROMPT_TYPE);
+                      if (!movedId) {
+                        endListDrag();
+                        return;
+                      }
+                      void (async () => {
+                        items = applyPromptReorder(
+                          items,
+                          movedId,
+                          section.groupId,
+                          null,
+                        ) as PromptItem[];
+                        await writeStorage(STORAGE_KEYS.items, items);
+                        endListDrag();
+                      })();
+                    });
+                    for (const it of section.items) {
+                      appendPromptRow(itemsWrap, it as PromptItem, section.groupId);
+                    }
+                    if (section.items.length === 0) {
+                      const placeholder = createEl('div', 'gv-pm-empty-drop');
+                      placeholder.textContent = '—';
+                      itemsWrap.appendChild(placeholder);
+                    }
+                    header.after(itemsWrap);
+                  }
+                });
+              }
+            }
+          });
+
+          header.addEventListener('dragleave', (e) => {
+            const related = e.relatedTarget as Node | null;
+            if (related && header.contains(related)) return;
+            expandOnHover.onLeave();
+          });
+
+          header.addEventListener('drop', (e) => {
+            if (isSectionDrag(e.dataTransfer)) {
+              e.preventDefault();
+              e.stopPropagation();
+              const fromKey = readDragId(e.dataTransfer, DND_SECTION_TYPE);
+              if (!fromKey || fromKey === section.key) {
+                endListDrag();
+                return;
+              }
+              const rect = header.getBoundingClientRect();
+              const place = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+              void (async () => {
+                await persistSectionOrder(
+                  reorderSectionOrder(sectionOrder, fromKey, section.key, place),
+                );
+                endListDrag();
+              })();
+              return;
+            }
+            if (isPromptDrag(e.dataTransfer)) {
+              e.preventDefault();
+              e.stopPropagation();
+              const movedId = readDragId(e.dataTransfer, DND_PROMPT_TYPE);
+              if (!movedId) {
+                endListDrag();
+                return;
+              }
+              const firstId = section.items[0]?.id ? String(section.items[0].id) : null;
+              const target = resolvePromptDropOnSection(section.groupId, firstId, !openSection);
+              void (async () => {
+                items = applyPromptReorder(
+                  items,
+                  movedId,
+                  target.targetGroupId,
+                  target.beforeItemId,
+                ) as PromptItem[];
+                await writeStorage(STORAGE_KEYS.items, items);
+                endListDrag();
+              })();
+            }
+          });
+        }
+
         header.appendChild(createGroupIconElement(sectionIconId, 'gv-pm-group-header-icon', 14));
         header.appendChild(caret);
         header.appendChild(label);
         header.addEventListener('click', (e) => {
+          // Ignore clicks that originated on the drag handle
+          if ((e.target as HTMLElement).closest('.gv-pm-drag-handle')) return;
+          e.preventDefault();
+          toggleSectionCollapse(section.key, searchActive);
+          renderList();
+        });
+        header.addEventListener('keydown', (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          if ((e.target as HTMLElement).closest('.gv-pm-drag-handle')) return;
           e.preventDefault();
           toggleSectionCollapse(section.key, searchActive);
           renderList();
         });
         frag.appendChild(header);
 
-        if (open) {
+        if (openSection) {
           const itemsWrap = createEl('div', 'gv-pm-group-items');
+          itemsWrap.dataset.gvPmGroupId = section.groupId ?? '';
+          if (section.items.length === 0) {
+            itemsWrap.classList.add('gv-pm-section-empty');
+          }
+          if (allowDrag) {
+            itemsWrap.addEventListener('dragover', (e) => {
+              if (!isPromptDrag(e.dataTransfer)) return;
+              if (section.items.length > 0) return;
+              e.preventDefault();
+              e.stopPropagation();
+              if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+              clearDropIndicators(list);
+              itemsWrap.classList.add('gv-pm-drop-into');
+            });
+            itemsWrap.addEventListener('drop', (e) => {
+              if (!isPromptDrag(e.dataTransfer)) return;
+              e.preventDefault();
+              e.stopPropagation();
+              const movedId = readDragId(e.dataTransfer, DND_PROMPT_TYPE);
+              if (!movedId) {
+                endListDrag();
+                return;
+              }
+              void (async () => {
+                items = applyPromptReorder(items, movedId, section.groupId, null) as PromptItem[];
+                await writeStorage(STORAGE_KEYS.items, items);
+                endListDrag();
+              })();
+            });
+          }
           for (const it of section.items) {
-            appendPromptRow(itemsWrap, it as PromptItem);
+            appendPromptRow(itemsWrap, it as PromptItem, section.groupId);
+          }
+          if (section.items.length === 0) {
+            const placeholder = createEl('div', 'gv-pm-empty-drop');
+            placeholder.textContent = '—';
+            itemsWrap.appendChild(placeholder);
           }
           frag.appendChild(itemsWrap);
         }
@@ -1763,7 +2049,7 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         pmLogger.info('Prompt data changed in chrome.storage.local, reloading...');
         const newItems = changes.gvPromptItems.newValue;
         if (Array.isArray(newItems)) {
-          items = migrateItemsToGroups(newItems) as PromptItem[];
+          items = ensurePromptOrders(migrateItemsToGroups(newItems)) as PromptItem[];
           renderActiveList();
           setNotice(i18n.t('syncSuccess') || 'Synced', 'ok');
         }
@@ -1772,7 +2058,15 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         const next = changes[StorageKeys.PROMPT_GROUPS].newValue;
         if (Array.isArray(next)) {
           groups = next as PromptGroup[];
+          sectionOrder = normalizeSectionOrder(groups, sectionOrder);
           populateGroupSelect(null);
+          renderActiveList();
+        }
+      }
+      if (area === 'local' && changes[StorageKeys.PROMPT_SECTION_ORDER]) {
+        const next = changes[StorageKeys.PROMPT_SECTION_ORDER].newValue;
+        if (Array.isArray(next)) {
+          sectionOrder = normalizeSectionOrder(groups, next as string[]);
           renderActiveList();
         }
       }
@@ -1874,11 +2168,18 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
         }
         const target = items.find((x) => x.id === editingId);
         if (target) {
+          const prevGroupId = target.groupId;
           target.text = text;
           target.groupId = groupId;
           if (name) target.name = name;
           else delete target.name;
           target.updatedAt = Date.now();
+          if (prevGroupId !== groupId) {
+            target.order = nextOrderInGroup(
+              items.filter((x) => x.id !== editingId),
+              groupId,
+            );
+          }
           await writeStorage(STORAGE_KEYS.items, items);
           setNotice(i18n.t('pm_saved') || 'Saved', 'ok');
         }
@@ -1889,9 +2190,15 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
           setInlineHint(i18n.t('pm_duplicate') || 'Duplicate prompt', 'err');
           return;
         }
-        const it: PromptItem = { id: uid(), text, groupId, createdAt: Date.now() };
+        const it: PromptItem = {
+          id: uid(),
+          text,
+          groupId,
+          createdAt: Date.now(),
+          order: nextOrderInGroup(items, groupId),
+        };
         if (name) it.name = name;
-        items = [it, ...items];
+        items = [...items, it];
         await writeStorage(STORAGE_KEYS.items, items);
       }
       (addForm.querySelector('.gv-pm-input-name') as HTMLInputElement).value = '';
@@ -1924,14 +2231,16 @@ export async function startPromptManager(): Promise<{ destroy: () => void }> {
               name,
             ),
           renamePlaceholder: i18n.t('pm_group_name_placeholder') || 'Group name',
-          moveUp: i18n.t('pm_group_move_up') || 'Move up',
-          moveDown: i18n.t('pm_group_move_down') || 'Move down',
           iconSection: i18n.t('pm_tag_icon_section') || 'Icon',
           close: i18n.t('pm_cancel') || 'Close',
         },
         translateIconLabel: (key) => i18n.t(key as TranslationKey) || key,
         onGroupsChanged: (next) => {
           groups = next;
+          sectionOrder = normalizeSectionOrder(groups, sectionOrder);
+          void writePromptSectionOrder(sectionOrder);
+          groups = syncGroupOrdersFromSectionOrder(groups, sectionOrder);
+          void writePromptGroups(groups);
           populateGroupSelect(null);
           renderList();
         },

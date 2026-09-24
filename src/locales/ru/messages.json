@@ -2366,5 +2366,9 @@
   "pm_group_move_down": {
     "message": "Вниз",
     "description": "pm_group_move_down"
+  },
+  "pm_drag_handle": {
+    "message": "Перетащите для изменения порядка",
+    "description": "pm_drag_handle"
   }
 }
