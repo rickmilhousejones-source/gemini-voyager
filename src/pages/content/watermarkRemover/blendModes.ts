@@ -11,6 +11,7 @@
  */
 
 // Constants definition
+const ALPHA_NOISE_FLOOR = 3 / 255; // Ignore low-level quantization noise from captures
 const ALPHA_THRESHOLD = 0.002; // Ignore very small alpha values (noise)
 const MAX_ALPHA = 0.99; // Avoid division by near-zero values
 const LOGO_VALUE = 255; // Color value for white watermark
@@ -20,6 +21,13 @@ export interface WatermarkPosition {
   y: number;
   width: number;
   height: number;
+}
+
+export interface RemoveWatermarkOptions {
+  /** Multiplier for alpha map strength. Gemini's newer marks are often weaker than the capture. */
+  alphaGain?: number;
+  /** Override logo channel value (default white 255; dark polarity uses 0). */
+  logoValue?: number;
 }
 
 /**
@@ -32,13 +40,19 @@ export interface WatermarkPosition {
  * @param imageData - Image data to process (will be modified in place)
  * @param alphaMap - Alpha channel data
  * @param position - Watermark position {x, y, width, height}
+ * @param options - Optional alpha gain / logo polarity
  */
 export function removeWatermark(
   imageData: ImageData,
   alphaMap: Float32Array,
   position: WatermarkPosition,
+  options: RemoveWatermarkOptions = {},
 ): void {
   const { x, y, width, height } = position;
+  const alphaGain =
+    Number.isFinite(options.alphaGain) && (options.alphaGain as number) > 0
+      ? (options.alphaGain as number)
+      : 1;
 
   // Process each pixel in the watermark area
   for (let row = 0; row < height; row++) {
@@ -49,16 +63,24 @@ export function removeWatermark(
       // Calculate index in alpha map
       const alphaIdx = row * width + col;
 
-      // Get alpha value
-      let alpha = alphaMap[alphaIdx];
+      // Negative alpha marks dark-polarity watermarks (black logo).
+      const rawAlpha = alphaMap[alphaIdx] ?? 0;
+      const alphaMagnitude = Math.abs(rawAlpha);
+      const logoValue = Number.isFinite(options.logoValue)
+        ? (options.logoValue as number)
+        : rawAlpha < 0
+          ? 0
+          : LOGO_VALUE;
+
+      const signalAlpha = Math.max(0, alphaMagnitude - ALPHA_NOISE_FLOOR) * alphaGain;
 
       // Skip very small alpha values (noise)
-      if (alpha < ALPHA_THRESHOLD) {
+      if (signalAlpha < ALPHA_THRESHOLD) {
         continue;
       }
 
       // Limit alpha value to avoid division by near-zero
-      alpha = Math.min(alpha, MAX_ALPHA);
+      const alpha = Math.min(alphaMagnitude * alphaGain, MAX_ALPHA);
       const oneMinusAlpha = 1.0 - alpha;
 
       // Apply reverse alpha blending to each RGB channel
@@ -66,7 +88,7 @@ export function removeWatermark(
         const watermarked = imageData.data[imgIdx + c];
 
         // Reverse alpha blending formula
-        const original = (watermarked - alpha * LOGO_VALUE) / oneMinusAlpha;
+        const original = (watermarked - alpha * logoValue) / oneMinusAlpha;
 
         // Clip to [0, 255] range
         imageData.data[imgIdx + c] = Math.max(0, Math.min(255, Math.round(original)));

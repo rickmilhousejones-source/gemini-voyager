@@ -64,6 +64,18 @@ const WATERMARK_ANCHOR_SWITCH_EVIDENCE_GAP = 8;
 const WATERMARK_MAX_REMOVAL_PASSES = 3;
 const WATERMARK_REPEAT_EVIDENCE_MIN = 20;
 const WATERMARK_REPEAT_LUMINANCE_DELTA_MIN = 12;
+/** Negative high-vs-low alpha luminance delta beyond this ⇒ dark (black) logo. */
+const WATERMARK_DARK_POLARITY_DELTA_MAX = -4;
+/**
+ * Newer Gemini marks are often weaker than the historical bg_* captures.
+ * Try several gains (inspired by journey-ad/gemini-watermark-remover 2026 params)
+ * and keep the residual-minimizing choice.
+ */
+const WATERMARK_ALPHA_GAIN_CANDIDATES = [0.25, 0.35, 0.45, 0.6, 0.75, 0.9, 1.0, 1.15] as const;
+const WATERMARK_RESIDUAL_FILL_MIN_ALPHA = 0.02;
+const WATERMARK_RESIDUAL_FILL_STRENGTH = 0.92;
+const WATERMARK_RESIDUAL_FILL_PAD = 10;
+const WATERMARK_RESIDUAL_FILL_EVIDENCE_MIN = 8;
 
 interface WatermarkEvidence {
   score: number;
@@ -96,6 +108,13 @@ const NEW_48_WATERMARK_CONFIG: WatermarkConfig = {
   alphaVariant: '20260520',
 };
 
+/** Recent Gemini 48px marks sit closer to the corner (~24px margins). */
+const TIGHT_48_WATERMARK_CONFIG: WatermarkConfig = {
+  logoSize: 48,
+  marginRight: 24,
+  marginBottom: 24,
+};
+
 const NEW_WATERMARK_CONFIG_BY_SIZE: Record<WatermarkLogoSize, WatermarkConfig> = {
   48: NEW_48_WATERMARK_CONFIG,
   96: NEW_96_WATERMARK_CONFIG,
@@ -107,18 +126,32 @@ const areSameWatermarkConfig = (a: WatermarkConfig, b: WatermarkConfig): boolean
   a.marginBottom === b.marginBottom &&
   a.alphaVariant === b.alphaVariant;
 
-function createMovedAnchorConfig(
+function isAnchorInBounds(
+  imageWidth: number,
+  imageHeight: number,
+  config: WatermarkConfig,
+): boolean {
+  const position = calculateWatermarkPosition(imageWidth, imageHeight, config);
+  return position.x >= 0 && position.y >= 0;
+}
+
+function collectAlternateAnchorConfigs(
   baseConfig: WatermarkConfig,
   imageWidth: number,
   imageHeight: number,
-): WatermarkConfig | null {
-  if (baseConfig.logoSize !== 48 && baseConfig.logoSize !== 96) return null;
+): WatermarkConfig[] {
+  if (baseConfig.logoSize !== 48 && baseConfig.logoSize !== 96) return [];
 
-  const optionConfig = NEW_WATERMARK_CONFIG_BY_SIZE[baseConfig.logoSize];
-  if (areSameWatermarkConfig(baseConfig, optionConfig)) return null;
+  const candidates: WatermarkConfig[] =
+    baseConfig.logoSize === 48
+      ? [TIGHT_48_WATERMARK_CONFIG, NEW_WATERMARK_CONFIG_BY_SIZE[48]]
+      : [NEW_WATERMARK_CONFIG_BY_SIZE[96]];
 
-  const position = calculateWatermarkPosition(imageWidth, imageHeight, optionConfig);
-  return position.x >= 0 && position.y >= 0 ? optionConfig : null;
+  return candidates.filter(
+    (candidate) =>
+      !areSameWatermarkConfig(baseConfig, candidate) &&
+      isAnchorInBounds(imageWidth, imageHeight, candidate),
+  );
 }
 
 /**
@@ -140,13 +173,8 @@ export function getWatermarkConfigOptions(
   imageHeight: number,
 ): WatermarkConfig[] {
   const baseConfig = detectWatermarkConfig(imageWidth, imageHeight);
-  const movedConfig = createMovedAnchorConfig(baseConfig, imageWidth, imageHeight);
-
-  if (!movedConfig || areSameWatermarkConfig(baseConfig, movedConfig)) {
-    return [baseConfig];
-  }
-
-  return [baseConfig, movedConfig];
+  const alternates = collectAlternateAnchorConfigs(baseConfig, imageWidth, imageHeight);
+  return [baseConfig, ...alternates];
 }
 
 /**
@@ -255,6 +283,63 @@ function measureWatermarkEvidence(
   return measureWatermarkEvidenceDetails(imageData, alphaMap, position).score;
 }
 
+/** Absolute evidence strength so dark (negative-score) marks compete with light ones. */
+function evidenceStrength(score: number): number {
+  return Number.isFinite(score) ? Math.abs(score) : 0;
+}
+
+function detectLogoValue(evidence: WatermarkEvidence): number {
+  return evidence.luminanceDelta <= WATERMARK_DARK_POLARITY_DELTA_MAX ? 0 : 255;
+}
+
+function isDarkLogo(logoValue: number): boolean {
+  return logoValue < 128;
+}
+
+/** Either residual signal is still strong → treat as full-strength / stacked for gain choice. */
+function looksLikeFullStrengthResidual(evidence: WatermarkEvidence, logoValue: number): boolean {
+  if (isDarkLogo(logoValue)) {
+    return (
+      evidence.luminanceDelta <= -WATERMARK_REPEAT_LUMINANCE_DELTA_MIN ||
+      evidence.score <= -WATERMARK_REPEAT_EVIDENCE_MIN
+    );
+  }
+  return (
+    evidence.luminanceDelta >= WATERMARK_REPEAT_LUMINANCE_DELTA_MIN ||
+    evidence.score >= WATERMARK_REPEAT_EVIDENCE_MIN
+  );
+}
+
+/** Both residual signals remain strong → another removal pass is warranted. */
+function looksLikeStackedWatermark(evidence: WatermarkEvidence, logoValue: number): boolean {
+  if (isDarkLogo(logoValue)) {
+    return (
+      evidence.luminanceDelta <= -WATERMARK_REPEAT_LUMINANCE_DELTA_MIN &&
+      evidence.score <= -WATERMARK_REPEAT_EVIDENCE_MIN
+    );
+  }
+  return (
+    evidence.luminanceDelta >= WATERMARK_REPEAT_LUMINANCE_DELTA_MIN &&
+    evidence.score >= WATERMARK_REPEAT_EVIDENCE_MIN
+  );
+}
+
+function looksLikeGainMismatch(evidence: WatermarkEvidence, logoValue: number): boolean {
+  if (isDarkLogo(logoValue)) {
+    // Wrong/over gain on a dark mark pushes high-alpha pixels too bright.
+    return (
+      evidence.luminanceDelta > 4 ||
+      (evidence.luminanceDelta > -WATERMARK_REPEAT_LUMINANCE_DELTA_MIN / 2 &&
+        Math.abs(evidence.score) >= WATERMARK_RESIDUAL_FILL_EVIDENCE_MIN)
+    );
+  }
+  return (
+    evidence.luminanceDelta < -4 ||
+    (evidence.luminanceDelta < WATERMARK_REPEAT_LUMINANCE_DELTA_MIN / 2 &&
+      Math.abs(evidence.score) >= WATERMARK_RESIDUAL_FILL_EVIDENCE_MIN)
+  );
+}
+
 export function chooseWatermarkAnchorOption(
   imageData: ImageData,
   options: WatermarkAnchorOption[],
@@ -269,45 +354,210 @@ export function chooseWatermarkAnchorOption(
     imageData.height,
     baseOption.config,
   );
-  const baseEvidence = measureWatermarkEvidence(imageData, baseOption.alphaMap, basePosition);
+  const baseStrength = evidenceStrength(
+    measureWatermarkEvidence(imageData, baseOption.alphaMap, basePosition),
+  );
 
   let strongestOption = baseOption;
-  let strongestEvidence = baseEvidence;
+  let strongestStrength = baseStrength;
 
   for (const option of options.slice(1)) {
     const position = calculateWatermarkPosition(imageData.width, imageData.height, option.config);
-    const evidence = measureWatermarkEvidence(imageData, option.alphaMap, position);
-    if (evidence > strongestEvidence) {
+    const strength = evidenceStrength(
+      measureWatermarkEvidence(imageData, option.alphaMap, position),
+    );
+    if (strength > strongestStrength) {
       strongestOption = option;
-      strongestEvidence = evidence;
+      strongestStrength = strength;
     }
   }
 
-  return strongestEvidence - baseEvidence >= WATERMARK_ANCHOR_SWITCH_EVIDENCE_GAP
+  return strongestStrength - baseStrength >= WATERMARK_ANCHOR_SWITCH_EVIDENCE_GAP
     ? strongestOption
     : baseOption;
+}
+
+function cloneImageDataPixels(imageData: ImageData): Uint8ClampedArray {
+  return new Uint8ClampedArray(imageData.data);
+}
+
+function scoreRemovalResidual(
+  imageData: ImageData,
+  alphaMap: Float32Array,
+  position: WatermarkPosition,
+  logoValue = 255,
+): number {
+  const evidence = measureWatermarkEvidenceDetails(imageData, alphaMap, position);
+  // Prefer near-zero residual structure. Penalize polarity-wrong overshoot.
+  const overshootPenalty = isDarkLogo(logoValue)
+    ? evidence.luminanceDelta > 0
+      ? Math.abs(evidence.luminanceDelta) * 1.5
+      : 0
+    : evidence.luminanceDelta < 0
+      ? Math.abs(evidence.luminanceDelta) * 1.5
+      : 0;
+  return Math.abs(evidence.score) + overshootPenalty;
+}
+
+/**
+ * Fill remaining watermark-shaped residue by sampling nearby clean pixels.
+ * Newer Gemini marks embed a "Gemini" wordmark inside the star; reverse blending
+ * alone often leaves that texture even when the solid-star alpha is correctly aligned.
+ */
+export function fillWatermarkResidual(
+  imageData: ImageData,
+  alphaMap: Float32Array,
+  position: WatermarkPosition,
+  options: { minAlpha?: number; strength?: number; pad?: number } = {},
+): void {
+  const minAlpha = options.minAlpha ?? WATERMARK_RESIDUAL_FILL_MIN_ALPHA;
+  const strength = options.strength ?? WATERMARK_RESIDUAL_FILL_STRENGTH;
+  const pad = options.pad ?? WATERMARK_RESIDUAL_FILL_PAD;
+  const { x, y, width, height } = position;
+  const { data, width: imageWidth, height: imageHeight } = imageData;
+
+  const sampleX0 = Math.max(0, x - pad);
+  const sampleY0 = Math.max(0, y - pad);
+  const sampleX1 = Math.min(imageWidth, x + width + pad);
+  const sampleY1 = Math.min(imageHeight, y + height + pad);
+
+  for (let row = 0; row < height; row++) {
+    for (let col = 0; col < width; col++) {
+      const alpha = Math.abs(alphaMap[row * width + col] ?? 0);
+      if (alpha < minAlpha) continue;
+
+      const pixelX = x + col;
+      const pixelY = y + row;
+      if (pixelX < 0 || pixelY < 0 || pixelX >= imageWidth || pixelY >= imageHeight) continue;
+
+      let sumR = 0;
+      let sumG = 0;
+      let sumB = 0;
+      let count = 0;
+
+      // Prefer nearby pixels outside the watermark footprint (or very low alpha).
+      for (let radius = 2; radius <= pad + 4 && count < 8; radius++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+            const sx = pixelX + dx;
+            const sy = pixelY + dy;
+            if (sx < sampleX0 || sy < sampleY0 || sx >= sampleX1 || sy >= sampleY1) continue;
+
+            const insideLogo =
+              sx >= x && sx < x + width && sy >= y && sy < y + height;
+            if (insideLogo) {
+              const localRow = sy - y;
+              const localCol = sx - x;
+              const sampleAlpha = Math.abs(alphaMap[localRow * width + localCol] ?? 0);
+              if (sampleAlpha >= minAlpha) continue;
+            }
+
+            const sampleIdx = (sy * imageWidth + sx) * 4;
+            sumR += data[sampleIdx];
+            sumG += data[sampleIdx + 1];
+            sumB += data[sampleIdx + 2];
+            count++;
+            if (count >= 12) break;
+          }
+          if (count >= 12) break;
+        }
+      }
+
+      if (count === 0) continue;
+
+      const imgIdx = (pixelY * imageWidth + pixelX) * 4;
+      const t = Math.min(1, strength);
+      data[imgIdx] = Math.round(data[imgIdx] * (1 - t) + (sumR / count) * t);
+      data[imgIdx + 1] = Math.round(data[imgIdx + 1] * (1 - t) + (sumG / count) * t);
+      data[imgIdx + 2] = Math.round(data[imgIdx + 2] * (1 - t) + (sumB / count) * t);
+    }
+  }
+}
+
+function chooseAlphaGain(
+  imageData: ImageData,
+  alphaMap: Float32Array,
+  position: WatermarkPosition,
+  logoValue = 255,
+): number {
+  const original = cloneImageDataPixels(imageData);
+  let bestGain = 1;
+  let bestScore = Number.POSITIVE_INFINITY;
+  let bestPixels: Uint8ClampedArray | null = null;
+
+  for (const gain of WATERMARK_ALPHA_GAIN_CANDIDATES) {
+    imageData.data.set(original);
+    removeWatermark(imageData, alphaMap, position, { alphaGain: gain, logoValue });
+    const score = scoreRemovalResidual(imageData, alphaMap, position, logoValue);
+    if (score < bestScore) {
+      bestScore = score;
+      bestGain = gain;
+      bestPixels = cloneImageDataPixels(imageData);
+    }
+  }
+
+  if (bestPixels) {
+    imageData.data.set(bestPixels);
+  } else {
+    imageData.data.set(original);
+  }
+
+  return bestGain;
+}
+
+export interface RemoveWatermarkResidualOptions {
+  /** Override logo channel value (default: detect from evidence; 255 light / 0 dark). */
+  logoValue?: number;
 }
 
 export function removeWatermarkWithResidualCheck(
   imageData: ImageData,
   alphaMap: Float32Array,
   position: WatermarkPosition,
+  options: RemoveWatermarkResidualOptions = {},
 ): number {
-  let passes = 0;
+  const originalPixels = cloneImageDataPixels(imageData);
+  const preEvidence = measureWatermarkEvidenceDetails(imageData, alphaMap, position);
+  const logoValue =
+    Number.isFinite(options.logoValue) && options.logoValue !== undefined
+      ? options.logoValue
+      : detectLogoValue(preEvidence);
+
+  // Probe at capture strength first. A still-present residual usually means
+  // stacked full-strength layers (keep gain=1 + multi-pass). Polarity-wrong
+  // overshoot or a weak leftover means the live Gemini mark is softer.
+  removeWatermark(imageData, alphaMap, position, { alphaGain: 1, logoValue });
+  const probe = measureWatermarkEvidenceDetails(imageData, alphaMap, position);
+
+  let alphaGain = 1;
+  let passes = 1;
+
+  const looksStackedOrFullStrength = looksLikeFullStrengthResidual(probe, logoValue);
+  const looksOverdarkOrWeakMismatch = looksLikeGainMismatch(probe, logoValue);
+
+  if (!looksStackedOrFullStrength && looksOverdarkOrWeakMismatch) {
+    imageData.data.set(originalPixels);
+    alphaGain = chooseAlphaGain(imageData, alphaMap, position, logoValue);
+    passes = 1;
+  }
 
   while (passes < WATERMARK_MAX_REMOVAL_PASSES) {
-    if (passes > 0) {
-      const residualEvidence = measureWatermarkEvidenceDetails(imageData, alphaMap, position);
-      if (
-        residualEvidence.score < WATERMARK_REPEAT_EVIDENCE_MIN ||
-        residualEvidence.luminanceDelta < WATERMARK_REPEAT_LUMINANCE_DELTA_MIN
-      ) {
-        break;
-      }
+    const residualEvidence = measureWatermarkEvidenceDetails(imageData, alphaMap, position);
+    if (!looksLikeStackedWatermark(residualEvidence, logoValue)) {
+      break;
     }
 
-    removeWatermark(imageData, alphaMap, position);
+    removeWatermark(imageData, alphaMap, position, { alphaGain, logoValue });
     passes++;
+  }
+
+  // Wordmark / texture left after reverse blending — fill from nearby clean pixels.
+  // Dark / gradient corners can make luminanceDelta negative even when a ghost
+  // remains, so gate only on residual structure score.
+  const afterBlend = measureWatermarkEvidenceDetails(imageData, alphaMap, position);
+  if (Math.abs(afterBlend.score) >= WATERMARK_RESIDUAL_FILL_EVIDENCE_MIN) {
+    fillWatermarkResidual(imageData, alphaMap, position);
   }
 
   return passes;
@@ -468,11 +718,13 @@ export class WatermarkEngine {
     );
     const { config, alphaMap } = chooseWatermarkAnchorOption(imageData, anchorOptions);
     const position = calculateWatermarkPosition(canvas.width, canvas.height, config);
+    const evidence = measureWatermarkEvidenceDetails(imageData, alphaMap, position);
+    const logoValue = detectLogoValue(evidence);
 
     // Remove watermark from image data. Gemini can stack multiple transparent
     // marks after iterative image edits, so repeat only while the known alpha
     // pattern is still clearly present at the selected anchor.
-    removeWatermarkWithResidualCheck(imageData, alphaMap, position);
+    removeWatermarkWithResidualCheck(imageData, alphaMap, position, { logoValue });
 
     // Write processed image data back to canvas
     ctx.putImageData(imageData, 0, 0);
